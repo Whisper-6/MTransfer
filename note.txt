@@ -1,0 +1,46 @@
+mgsm:       bn de en es fr ja ru sw te th zh
+MSVAMP:     bn de en es fr ja ru sw th zh
+PolyMath:   ar bn de en es fr id it ja ko ms pt ru sw te th vi zh
+
+最终选择的测试语言: bn de es fr ja ru sw th
+
+```
+pip install datasets huggingface_hub tqdm vllm  # 安装依赖
+sh down_datasets.sh                             # 下载和生成数据集
+
+sudo apt update
+sudo apt install git-lfs
+git lfs install                                 # 安装 git-lfs
+sh down_models.sh                               # 下载模型
+```
+
+数据集存储在 eval_data/mmath/ 下，命名为 fr.jsonl 等
+共 bn, de, es, fr, ja, ru, sw, th 八种小语言，再加上 en 一种主要语言
+每条信息包括 source, query(英语), m_query(对应语言), answer
+
+
+# 使用 git-lfs 下载模型到本地, HuggingFace 的接口在 AutoDL 上可能 401
+
+sudo apt update
+sudo apt install git-lfs
+git lfs install
+
+
+python eval.py \
+  --model Qwen2.5-7B-Instruct \
+  --num-gpus 8 \
+  --batch-size 8 \
+  --config default \
+  --output-dir output/default-7B
+  
+
+python draw_radar.py \
+       --result-csv output/TenAen/result.csv \
+       --output radar/TenAen.png
+
+{"id": "msvamp-ja-69", "query": "a mailman has to give 5 pieces of junk mail to each block . if he gives 25 mails to each house in a block how many houses are there in a block ?", "m_query": "郵便配達員は、各ブロックに5通のジャンクメールを配る必要があります。1つのブロックの各家庭に25通の郵便物を配る場合、1つのブロックには何軒の家がありますか？", "answer": "5.0"}
+错题，msvamp 糖丸了
+
+python draw_radar.py \
+       --result-csv output/TenAen-7B/result.csv \
+       --output radar/TenAen-7B.png

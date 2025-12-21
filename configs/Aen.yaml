@@ -1,0 +1,37 @@
+languages:
+  bn:
+    prompt: |
+      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
+  de:
+    prompt: |
+      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
+  es:
+    prompt: |
+      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
+  fr:
+    prompt: |
+      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
+  ja:
+    prompt: |
+      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
+  ru:
+    prompt: |
+      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
+  sw:
+    prompt: |
+      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
+  th:
+    prompt: |
+      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
+  en:
+    prompt: |
+      Answer the question, and enclose the final number at the end of the response in $\\boxed{{}}$.
+      Question: {question}
