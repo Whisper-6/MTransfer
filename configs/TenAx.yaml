@@ -1,0 +1,33 @@
+languages:
+  bn:
+    prompt: |
+      Translate the question into English, then answer it in Bengali and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  de:
+    prompt: |
+      Translate the question into English, then answer it in German and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  es:
+    prompt: |
+      Translate the question into English, then answer it in Spanish and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  fr:
+    prompt: |
+      Translate the question into English, then answer it in French and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  ja:
+    prompt: |
+      Translate the question into English, then answer it in Japanese and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  ru:
+    prompt: |
+      Translate the question into English, then answer it in Russian and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  th:
+    prompt: |
+      Translate the question into English, then answer it in Thai and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  en:
+    prompt: |
+      Answer the question, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}

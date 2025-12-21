@@ -23,10 +23,6 @@ languages:
     prompt: |
       Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
       Question: {question}
-  sw:
-    prompt: |
-      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
   th:
     prompt: |
       Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.

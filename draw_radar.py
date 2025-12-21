@@ -7,6 +7,7 @@ import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 
 def parse_args():
@@ -36,6 +37,7 @@ def main():
 
     # 提取非 en 语言 total 正确率，按字典序
     langs = sorted([l for l in df["language"].unique() if l != "en"])
+
     values = [
         df[(df["language"] == l) & (df["source"] == "total")]["accuracy"].values[0]
         for l in langs
@@ -75,9 +77,10 @@ def main():
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(langs)
 
-    # 半径刻度
-    ax.set_yticks(np.linspace(0, 1, 5))
-    ax.set_yticklabels([f"{v:.2f}" for v in np.linspace(0, 1, 5)])
+    # 半径刻度（从 0.5 开始）
+    ax.set_ylim(0.5, 1.0)
+    ax.set_yticks(np.linspace(0.5, 1.0, 5))
+    ax.set_yticklabels([f"{v:.2f}" for v in np.linspace(0.5, 1.0, 5)])
 
     ax.set_title("Model Math Reasoning Accuracy per Language", pad=20)
     ax.legend(loc="upper right")
@@ -85,6 +88,7 @@ def main():
     # ------------------------------ 
     # 保存到本地图片
     # ------------------------------
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
     plt.savefig(args.output, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Radar chart saved to: {args.output}")

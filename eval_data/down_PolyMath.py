@@ -4,7 +4,7 @@ from datasets import load_dataset, get_dataset_config_names, get_dataset_split_n
 from tqdm import tqdm
 
 DATASET_NAME = "Qwen/PolyMath"
-TARGET_LANGS = ["bn", "de", "es", "fr", "ja", "ru", "sw", "th", "en"]
+TARGET_LANGS = ["bn", "de", "es", "fr", "ja", "ru", "th", "en"]
 TARGET_DIFFICULTY = "low"
 OUTPUT_DIR = "polymath_low"
 

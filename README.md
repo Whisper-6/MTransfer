@@ -21,7 +21,7 @@ AutoDL 访问 HuggingFace 需要加速：`source /etc/network_turbo`
 - mgsm:   bn de en es fr ja ru sw te th zh
 - MSVAMP: bn de en es fr ja ru sw th zh
 
-最终选择的测试语言: bn de es fr ja ru sw th
+最终选择的测试语言: bn de es fr ja ru th (sw 表现太差，删去)
 
 运行 `down_datasets.sh` 生成数据集
 
@@ -39,23 +39,23 @@ AutoDL 访问 HuggingFace 需要加速：`source /etc/network_turbo`
 
 # Eval
 
-`configs/` 里用 yaml 配置了每种 eval 方案对应的 prompt 格式
+`configs/` 里用 yaml 配置了每种 eval 方案对应的 prompt 格式，`--config` 后填写对应 yaml 的名称
 
 ```
 python eval.py \
-  --model Qwen2.5-7B-Instruct \     # 模型名称
+  --model Qwen2.5-7B-Instruct \
   --num-gpus 8 \
   --batch-size 8 \
-  --config default \                # prompt 格式方案
-  --output-dir output/default       # 输出文件夹
+  --config default \
+  --output-dir output/Qwen2.5-7B-Instruct/default
 ```
 
 输出包括每个语言的回答（形如 fr.csv）和总分（result.csv）
 
 ```
 python draw_radar.py \
-    --result-csv output/default/result.csv \
-    --output radar/default.png
+    --result-csv output/Qwen2.5-7B-Instruct/default/result.csv \
+    --output radar/Qwen2.5-7B-Instruct/default.png
 ```
 
 可绘制雷达图

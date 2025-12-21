@@ -23,10 +23,6 @@ languages:
     prompt: |
       Ответьте на вопрос и заключите окончательное число в конце ответа в $\\boxed{{}}$.
       Вопрос: {question}
-  sw:
-    prompt: |
-      Jibu swali, na uweke nambari ya mwisho mwishoni mwa jibu ndani ya $\\boxed{{}}$.
-      Swali: {question}
   th:
     prompt: |
       ตอบคำถาม และใส่ตัวเลขสุดท้ายไว้ท้ายคำตอบโดยครอบด้วย $\\boxed{{}}$.

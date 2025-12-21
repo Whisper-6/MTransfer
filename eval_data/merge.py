@@ -5,7 +5,7 @@ BASE_DIR = os.getcwd()
 OUTPUT_DIR = os.path.join(BASE_DIR, "mmath")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-LANGS = ["bn", "de", "es", "fr", "ja", "ru", "sw", "th"]
+LANGS = ["bn", "de", "es", "fr", "ja", "ru", "th"]
 EN_LANG = "en"
 
 DATASETS = {
