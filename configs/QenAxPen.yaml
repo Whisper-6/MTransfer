@@ -1,0 +1,38 @@
+# QenAxPen: Question in English, Answer in X language, Prompt in English
+# 英文问题，英文指令（但要求用指定语言回答）
+question_field: "query"
+
+languages:
+  bn:
+    prompt: |
+      Answer the question in Bengali, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  de:
+    prompt: |
+      Answer the question in German, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  es:
+    prompt: |
+      Answer the question in Spanish, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  fr:
+    prompt: |
+      Answer the question in French, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  ja:
+    prompt: |
+      Answer the question in Japanese, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  ru:
+    prompt: |
+      Answer the question in Russian, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  th:
+    prompt: |
+      Answer the question in Thai, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+  en:
+    prompt: |
+      Answer the question, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+

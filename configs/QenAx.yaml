@@ -1,0 +1,38 @@
+# QenAx: Question in English, Answer in X language
+# 英文问题，各语言指令和回答
+question_field: "query"
+
+languages:
+  bn:
+    prompt: |
+      প্রশ্নের উত্তর দিন, এবং উত্তরের শেষে চূড়ান্ত সংখ্যাটি $\boxed{{}}$ এর মধ্যে লিখুন।
+      প্রশ্ন: {question}
+  de:
+    prompt: |
+      Beantworte die Frage und schreibe die endgültige Zahl am Ende der Antwort in $\boxed{{}}$.
+      Frage: {question}
+  es:
+    prompt: |
+      Responde a la pregunta y encierra el número final al final de la respuesta en $\boxed{{}}$.
+      Pregunta: {question}
+  fr:
+    prompt: |
+      Réponds à la question et mets le nombre final à la fin de la réponse entre $\boxed{{}}$.
+      Question : {question}
+  ja:
+    prompt: |
+      質問に答え、最終的な数値を回答の最後に $\boxed{{}}$ で囲んでください。
+      問題: {question}
+  ru:
+    prompt: |
+      Ответьте на вопрос и заключите окончательное число в конце ответа в $\boxed{{}}$.
+      Вопрос: {question}
+  th:
+    prompt: |
+      ตอบคำถาม และใส่ตัวเลขสุดท้ายไว้ท้ายคำตอบโดยครอบด้วย $\boxed{{}}$.
+      คำถาม: {question}
+  en:
+    prompt: |
+      Answer the question, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
+

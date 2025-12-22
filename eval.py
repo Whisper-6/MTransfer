@@ -31,15 +31,21 @@ def worker_process(rank, world_size, args, rank_lang_data, config, return_dict):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     torch.cuda.set_device(0)
 
+    # 处理模型路径：如果是绝对路径直接使用，否则拼接默认路径
+    if os.path.isabs(args.model):
+        model_path = args.model
+    else:
+        model_path = os.path.join(args.model_dir, args.model)
+
     # 初始化模型
     llm = LLM(
-        model=f"/root/autodl-tmp/local_model/{args.model}",
+        model=model_path,
         dtype="half",
     )
 
     # 初始化 tokenizer（用于 chat template）
     tokenizer = AutoTokenizer.from_pretrained(
-        f"/root/autodl-tmp/local_model/{args.model}",
+        model_path,
         trust_remote_code=True,
     )
 
@@ -52,80 +58,132 @@ def worker_process(rank, world_size, args, rank_lang_data, config, return_dict):
 
         keyword_stats = {kw: {"total": 0, "correct": 0} for kw in args.sources}
         yaml_prompt = config["languages"][lang]["prompt"]
+        
+        # 检查配置文件是否指定使用英文问题
+        question_field = config.get("question_field", "m_query")
 
-        pbar = tqdm(
-            total=len(data_slice),
-            desc=f"[GPU {rank}] {lang}",
-            position=rank,
-            leave=False,
-        )
-
-        for i in range(0, len(data_slice), args.batch_size):
-            batch = data_slice[i:i + args.batch_size]
-
-            # ---------- 构造 chat-template prompt ----------
-            prompts = []
-            for ex in batch:
-                user_content = yaml_prompt.format(question=ex["m_query"])
-
+        # ---------- 优化方案：一次性构造所有 prompts ----------
+        if args.use_vllm_batch_all:
+            # 方案1: 让 vLLM 一次性处理所有数据（推荐）
+            all_prompts = []
+            for ex in data_slice:
+                user_content = yaml_prompt.format(question=ex[question_field])
                 messages = [
-                    {
-                        "role": "system",
-                        "content": "You are a helpful assistant.",
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content,
-                    },
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": user_content},
                 ]
-
                 prompt = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
+                    messages, tokenize=False, add_generation_prompt=True
                 )
-
-                prompts.append(prompt)
-            # -----------------------------------------------
-
+                all_prompts.append(prompt)
+            
+            # 一次性生成所有结果
             outputs = llm.generate(
-                prompts,
+                all_prompts,
                 SamplingParams(
                     temperature=args.temperature,
                     max_tokens=args.max_tokens,
-                    stop=["<|user|>"],  # 保险：防止继续对话
+                    stop=["<|user|>"],
                 ),
-                use_tqdm=False,
+                use_tqdm=True,
             )
-
-            for ex, out in zip(batch, outputs):
+            
+            # 处理结果
+            for ex, out in zip(data_slice, outputs):
                 text = out.outputs[0].text.strip()
                 pred = last_number_from_text(text)
-
                 try:
                     ans = int(float(convert_to_arabic_digits(str(ex["answer"]))))
                 except:
                     ans = None
-
                 is_correct = pred == ans
                 total += 1
                 correct += int(is_correct)
-
                 for kw in args.sources:
                     if kw in ex["source"]:
                         keyword_stats[kw]["total"] += 1
                         keyword_stats[kw]["correct"] += int(is_correct)
-
                 results.append({
                     "source": ex["source"],
                     "full_response": text,
                     "pred_number": pred if pred is not None else "",
                     "answer": ans if ans is not None else "",
                 })
+        else:
+            # 方案2: 手动分批（原方案，兼容性好）
+            pbar = tqdm(
+                total=len(data_slice),
+                desc=f"[GPU {rank}] {lang}",
+                position=rank,
+                leave=False,
+            )
 
-                pbar.update(1)
+            for i in range(0, len(data_slice), args.batch_size):
+                batch = data_slice[i:i + args.batch_size]
 
-        pbar.close()
+                # ---------- 构造 chat-template prompt ----------
+                prompts = []
+                for ex in batch:
+                    user_content = yaml_prompt.format(question=ex[question_field])
+
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": "You are a helpful assistant.",
+                        },
+                        {
+                            "role": "user",
+                            "content": user_content,
+                        },
+                    ]
+
+                    prompt = tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+
+                    prompts.append(prompt)
+                # -----------------------------------------------
+
+                outputs = llm.generate(
+                    prompts,
+                    SamplingParams(
+                        temperature=args.temperature,
+                        max_tokens=args.max_tokens,
+                        stop=["<|user|>"],  # 保险：防止继续对话
+                    ),
+                    use_tqdm=False,
+                )
+
+                for ex, out in zip(batch, outputs):
+                    text = out.outputs[0].text.strip()
+                    pred = last_number_from_text(text)
+
+                    try:
+                        ans = int(float(convert_to_arabic_digits(str(ex["answer"]))))
+                    except:
+                        ans = None
+
+                    is_correct = pred == ans
+                    total += 1
+                    correct += int(is_correct)
+
+                    for kw in args.sources:
+                        if kw in ex["source"]:
+                            keyword_stats[kw]["total"] += 1
+                            keyword_stats[kw]["correct"] += int(is_correct)
+
+                    results.append({
+                        "source": ex["source"],
+                        "full_response": text,
+                        "pred_number": pred if pred is not None else "",
+                        "answer": ans if ans is not None else "",
+                    })
+
+                    pbar.update(1)
+
+            pbar.close()
 
         worker_results[lang] = {
             "total": total,
@@ -145,8 +203,9 @@ def worker_process(rank, world_size, args, rank_lang_data, config, return_dict):
 # ----------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--model", required=True, help="Model name or path (absolute path or relative to --model-dir)")
+    parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model", help="Default directory for models (when --model is not absolute)")
+    parser.add_argument("--batch-size", default="8", help="Batch size: a number (e.g., 8) or 'all' to let vLLM handle all data at once (faster)")
     parser.add_argument("--max_tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.3)
     parser.add_argument("--num-gpus", type=int, default=1)
@@ -154,6 +213,17 @@ def main():
     parser.add_argument("--data-dir", default="eval_data/mmath")
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
+    
+    # 解析 batch_size 参数
+    if args.batch_size.lower() == "all":
+        args.use_vllm_batch_all = True
+        args.batch_size = None  # 不需要数值
+    else:
+        args.use_vllm_batch_all = False
+        try:
+            args.batch_size = int(args.batch_size)
+        except ValueError:
+            parser.error(f"--batch-size must be a number or 'all', got: {args.batch_size}")
 
     # 加载 YAML 配置
     config_path = "./configs/" + args.config + ".yaml"
