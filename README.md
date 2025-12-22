@@ -9,6 +9,7 @@ conda activate nlp # 在并行智算云上
 # NetWork
 
 AutoDL 访问 HuggingFace 需要加速：`source /etc/network_turbo`
+并行智算云加速：`source /workspace/v2ray/network_setup.sh`
 
 # DataSet
 
