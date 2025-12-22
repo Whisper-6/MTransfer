@@ -1,49 +1,33 @@
 import os
 import json
-import re
 import csv
 import argparse
 import math
 import multiprocessing as mp
-from tqdm import tqdm
+import random
 import torch
 from vllm import LLM, SamplingParams
 import yaml
+from tqdm import tqdm
+import time
 from transformers import AutoTokenizer
 
-# ----------------------
-# 数字转换函数
-# ----------------------
-BENGALI_DIGITS = "০১২৩৪৫৬৭৮৯"
+from utils import last_number_from_text
 
-def convert_to_arabic_digits(s):
-    return ''.join(str(BENGALI_DIGITS.index(c)) if c in BENGALI_DIGITS else c for c in s)
 
-def last_number_from_text(text):
-    text = convert_to_arabic_digits(text)
-    nums = re.findall(r"[-+]?\d+", text)
-    return int(nums[-1]) if nums else None
+import warnings
+warnings.filterwarnings("ignore", message=".*destroy_process_group.*")
 
 # ----------------------
 # 单进程函数（每 GPU 一个常驻进程）
 # ----------------------
-def worker_process(rank, world_size, args, rank_lang_data, config, return_dict):
+def worker_process(rank, args, rank_lang_data, config, return_dict, progress):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     torch.cuda.set_device(0)
 
-    # 处理模型路径：如果是绝对路径直接使用，否则拼接默认路径
-    if os.path.isabs(args.model):
-        model_path = args.model
-    else:
-        model_path = os.path.join(args.model_dir, args.model)
+    model_path = os.path.join(args.model_dir, args.model)
+    llm = LLM(model=model_path, dtype="half")
 
-    # 初始化模型
-    llm = LLM(
-        model=model_path,
-        dtype="half",
-    )
-
-    # 初始化 tokenizer（用于 chat template）
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
         trust_remote_code=True,
@@ -52,287 +36,285 @@ def worker_process(rank, world_size, args, rank_lang_data, config, return_dict):
     worker_results = {}
 
     for lang, data_slice in rank_lang_data.items():
-        total = 0
-        correct = 0
-        results = []
+        if not data_slice:
+            continue
 
-        keyword_stats = {kw: {"total": 0, "correct": 0} for kw in args.sources}
         yaml_prompt = config["languages"][lang]["prompt"]
-        
-        # 检查配置文件是否指定使用英文问题
         question_field = config.get("question_field", "m_query")
 
-        # ---------- 优化方案：一次性构造所有 prompts ----------
-        if args.use_vllm_batch_all:
-            # 方案1: 让 vLLM 一次性处理所有数据（推荐）
-            all_prompts = []
-            for ex in data_slice:
-                user_content = yaml_prompt.format(question=ex[question_field])
-                messages = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": user_content},
-                ]
-                prompt = tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
+        # ---------- 构造 prompts（每题 k 次） ----------
+        all_prompts, prompt_meta, prompt_texts = [], [], []
+
+        per_source_qids = {src: [] for src in args.sources}
+
+        for ex_id, ex in enumerate(data_slice):
+            for src in args.sources:
+                if src in ex["source"]:
+                    per_source_qids[src].append(ex_id)
+
+            user_content = yaml_prompt.format(question=ex[question_field])
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": user_content},
+            ]
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+            for _ in range(args.num_samples):
                 all_prompts.append(prompt)
-            
-            # 一次性生成所有结果
-            outputs = llm.generate(
-                all_prompts,
-                SamplingParams(
-                    temperature=args.temperature,
-                    max_tokens=args.max_tokens,
-                    stop=["<|user|>"],
-                ),
-                use_tqdm=True,
-            )
-            
-            # 处理结果
-            for ex, out in zip(data_slice, outputs):
-                text = out.outputs[0].text.strip()
-                pred = last_number_from_text(text)
-                try:
-                    ans = int(float(convert_to_arabic_digits(str(ex["answer"]))))
-                except:
-                    ans = None
-                is_correct = pred == ans
-                total += 1
-                correct += int(is_correct)
-                for kw in args.sources:
-                    if kw in ex["source"]:
-                        keyword_stats[kw]["total"] += 1
-                        keyword_stats[kw]["correct"] += int(is_correct)
-                results.append({
-                    "source": ex["source"],
-                    "full_response": text,
-                    "pred_number": pred if pred is not None else "",
-                    "answer": ans if ans is not None else "",
-                })
-        else:
-            # 方案2: 手动分批（原方案，兼容性好）
-            pbar = tqdm(
-                total=len(data_slice),
-                desc=f"[GPU {rank}] {lang}",
-                position=rank,
-                leave=False,
-            )
+                prompt_meta.append(ex_id)
+                prompt_texts.append(prompt)
 
-            for i in range(0, len(data_slice), args.batch_size):
-                batch = data_slice[i:i + args.batch_size]
+        # ---------- 一次性生成 ----------
+        outputs = llm.generate(
+            all_prompts,
+            SamplingParams(
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                stop=["<|user|>"],
+                seed=None,
+            ),
+            use_tqdm=False,
+        )
 
-                # ---------- 构造 chat-template prompt ----------
-                prompts = []
-                for ex in batch:
-                    user_content = yaml_prompt.format(question=ex[question_field])
+        # increment shared progress counter: one batch finished
+        try:
+            with progress.get_lock():
+                progress.value += 1
+        except Exception:
+            # fallback: ignore if progress isn't available
+            pass
 
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": "You are a helpful assistant.",
-                        },
-                        {
-                            "role": "user",
-                            "content": user_content,
-                        },
-                    ]
+        # ---------- per-question 统计 ----------
+        per_example_correct = [0] * len(data_slice)
+        kept_correct, kept_wrong = [], []
 
-                    prompt = tokenizer.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
+        for ex_id, prompt, out in zip(prompt_meta, prompt_texts, outputs):
+            ex = data_slice[ex_id]
+            text = out.outputs[0].text.strip()
+            pred = last_number_from_text(text)
+            ans = ex["answer"]
 
-                    prompts.append(prompt)
-                # -----------------------------------------------
+            is_correct = (pred == ans)
+            per_example_correct[ex_id] += int(is_correct)
 
-                outputs = llm.generate(
-                    prompts,
-                    SamplingParams(
-                        temperature=args.temperature,
-                        max_tokens=args.max_tokens,
-                        stop=["<|user|>"],  # 保险：防止继续对话
-                    ),
-                    use_tqdm=False,
-                )
+            record = {
+                "language": lang,
+                "source": ex["source"],
+                "prompt": prompt,
+                "full_response": text,
+                "pred_number": pred if pred is not None else "",
+                "answer": ans if ans is not None else "",
+                "is_correct": int(is_correct),
+            }
 
-                for ex, out in zip(batch, outputs):
-                    text = out.outputs[0].text.strip()
-                    pred = last_number_from_text(text)
+            (kept_correct if is_correct else kept_wrong).append(record)
 
-                    try:
-                        ans = int(float(convert_to_arabic_digits(str(ex["answer"]))))
-                    except:
-                        ans = None
+        # ---------- 随机保留样本 ----------
+        random.shuffle(kept_correct)
+        random.shuffle(kept_wrong)
+        kept_correct = kept_correct[:args.keep_correct]
+        kept_wrong = kept_wrong[:args.keep_wrong]
 
-                    is_correct = pred == ans
-                    total += 1
-                    correct += int(is_correct)
+        # ---------- 汇总正确率信息，不计算 CI ----------
+        k = args.num_samples
+        N = len(data_slice)
+        total_correct = sum(per_example_correct)
+        total_trials = N * k
 
-                    for kw in args.sources:
-                        if kw in ex["source"]:
-                            keyword_stats[kw]["total"] += 1
-                            keyword_stats[kw]["correct"] += int(is_correct)
-
-                    results.append({
-                        "source": ex["source"],
-                        "full_response": text,
-                        "pred_number": pred if pred is not None else "",
-                        "answer": ans if ans is not None else "",
-                    })
-
-                    pbar.update(1)
-
-            pbar.close()
+        source_stats = {}
+        for src in args.sources:
+            ids = per_source_qids[src]
+            if not ids:
+                continue
+            correct_src = sum(per_example_correct[i] for i in ids)
+            total_src = len(ids) * k
+            source_stats[src] = {
+                "num_questions": len(ids),
+                "total_correct": correct_src,
+                "total_trials": total_src,
+            }
 
         worker_results[lang] = {
-            "total": total,
-            "correct": correct,
-            "results": results,
-            "keyword_stats": keyword_stats,
+            "num_questions": N,
+            "total_correct": total_correct,
+            "total_trials": total_trials,
+            "sources": source_stats,
+            "kept_correct": kept_correct,
+            "kept_wrong": kept_wrong,
         }
 
     return_dict[rank] = worker_results
 
-    # 清理
     del llm
     torch.cuda.empty_cache()
+
 
 # ----------------------
 # 主函数
 # ----------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="Model name or path (absolute path or relative to --model-dir)")
-    parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model", help="Default directory for models (when --model is not absolute)")
-    parser.add_argument("--batch-size", default="8", help="Batch size: a number (e.g., 8) or 'all' to let vLLM handle all data at once (faster)")
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument("--num-gpus", type=int, default=torch.cuda.device_count())
+    parser.add_argument("--keep-correct", type=int, default=32)
+    parser.add_argument("--keep-wrong", type=int, default=32)
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--data-dir", default="eval_data/mmath")
+    parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model")
     parser.add_argument("--max_tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.3)
-    parser.add_argument("--num-gpus", type=int, default=1)
-    parser.add_argument("--output-dir", default="output")
-    parser.add_argument("--data-dir", default="eval_data/mmath")
-    parser.add_argument("--config", required=True)
+
     args = parser.parse_args()
-    
-    # 解析 batch_size 参数
-    if args.batch_size.lower() == "all":
-        args.use_vllm_batch_all = True
-        args.batch_size = None  # 不需要数值
-    else:
-        args.use_vllm_batch_all = False
-        try:
-            args.batch_size = int(args.batch_size)
-        except ValueError:
-            parser.error(f"--batch-size must be a number or 'all', got: {args.batch_size}")
-
-    # 加载 YAML 配置
-    config_path = "./configs/" + args.config + ".yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-
     args.sources = ["mgsm", "polymath-low"]
-    langs = list(config["languages"].keys())
 
+    args.keep_correct = args.keep_correct // args.num_gpus
+    args.keep_wrong = args.keep_wrong // args.num_gpus
+
+    if args.output_dir is None:
+        args.output_dir = os.path.join("output", args.model, args.config)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # 预加载并切分所有语言数据
+    with open(os.path.join("configs", f"{args.config}.yaml"), encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    langs = list(config["languages"].keys())
+
+    # ---------- 加载数据 ----------
     all_lang_data = {}
     for lang in langs:
         path = os.path.join(args.data_dir, f"{lang}.jsonl")
         if not os.path.exists(path):
             continue
-
         with open(path, encoding="utf-8") as f:
             data = [json.loads(l) for l in f]
 
-        chunk_size = math.ceil(len(data) / args.num_gpus)
+        chunk = math.ceil(len(data) / args.num_gpus)
         all_lang_data[lang] = [
-            data[i * chunk_size:(i + 1) * chunk_size]
-            for i in range(args.num_gpus)
+            data[i * chunk:(i + 1) * chunk] for i in range(args.num_gpus)
         ]
 
-    # 启动 GPU 常驻进程
+    # ---------- 多进程 ----------
     manager = mp.Manager()
     return_dict = manager.dict()
     processes = []
 
-    for rank in range(args.num_gpus):
-        rank_lang_data = {
-            lang: all_lang_data[lang][rank]
-            for lang in all_lang_data
-        }
+    # compute total number of generate batches (per-lang per-rank where slice non-empty)
+    total_batches = 0
+    for lang in all_lang_data:
+        for r in range(args.num_gpus):
+            if all_lang_data[lang][r]:
+                total_batches += 1
 
+    # shared progress counter
+    progress = mp.Value('i', 0)
+
+    for rank in range(args.num_gpus):
+        rank_data = {lang: all_lang_data[lang][rank] for lang in all_lang_data}
         p = mp.Process(
             target=worker_process,
-            args=(rank, args.num_gpus, args, rank_lang_data, config, return_dict)
+            args=(rank, args, rank_data, config, return_dict, progress),
         )
         p.start()
         processes.append(p)
 
+    # display progress bar and wait until all batches complete
+    if total_batches > 0:
+        with tqdm(total=total_batches, desc="generate batches") as pbar:
+            last = 0
+            while True:
+                with progress.get_lock():
+                    cur = progress.value
+                if cur > last:
+                    pbar.update(cur - last)
+                    last = cur
+                if cur >= total_batches:
+                    break
+                time.sleep(0.1)
+
+    # ensure all processes finish
     for p in processes:
         p.join()
 
-    # 汇总 & 保存
+    # ---------- 汇总与计算 CI ----------
     summary_rows = []
 
     for lang in all_lang_data:
-        total = 0
-        correct = 0
-        results = []
-        keyword_stats = {kw: {"total": 0, "correct": 0} for kw in args.sources}
+        total_correct = 0
+        total_trials = 0
+        kept_samples = []
+
+        source_agg = {src: {"correct": 0, "total": 0} for src in args.sources}
 
         for v in return_dict.values():
-            lang_res = v[lang]
-            total += lang_res["total"]
-            correct += lang_res["correct"]
-            results.extend(lang_res["results"])
+            if lang not in v:
+                continue
+            res = v[lang]
+            total_correct += res["total_correct"]
+            total_trials += res["total_trials"]
+            kept_samples.extend(res["kept_correct"])
+            kept_samples.extend(res["kept_wrong"])
 
-            for kw in args.sources:
-                keyword_stats[kw]["total"] += lang_res["keyword_stats"][kw]["total"]
-                keyword_stats[kw]["correct"] += lang_res["keyword_stats"][kw]["correct"]
+            for src, sres in res["sources"].items():
+                source_agg[src]["correct"] += sres["total_correct"]
+                source_agg[src]["total"] += sres["total_trials"]
 
-        out_csv = os.path.join(args.output_dir, f"{lang}.csv")
-        with open(out_csv, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=["source", "full_response", "pred_number", "answer"]
-            )
-            writer.writeheader()
-            writer.writerows(results)
-
-        acc = correct / max(1, total)
-        print(f"\n✅ {lang}: {acc:.4f} ({correct}/{total})")
-
-        for kw in args.sources:
-            k_total = keyword_stats[kw]["total"]
-            k_correct = keyword_stats[kw]["correct"]
-            k_acc = k_correct / max(1, k_total)
-            print(f"  {kw}: {k_acc:.4f}")
-
+        # ---------- source-level CI ----------
+        for src in args.sources:
+            agg = source_agg[src]
+            if agg["total"] == 0:
+                continue
+            acc = agg["correct"] / agg["total"]
+            stderr = math.sqrt(acc * (1 - acc) / agg["total"])
+            ci_radius = 1.96 * stderr
             summary_rows.append({
                 "language": lang,
-                "source": kw,
-                "total": k_total,
-                "correct": k_correct,
-                "accuracy": round(k_acc, 4)
+                "source": src,
+                "total": agg["total"],
+                "correct": agg["correct"],
+                "accuracy": round(acc, 4),
+                "ci_radius": round(ci_radius, 4),
             })
+
+        # ---------- total CI ----------
+        if total_trials > 0:
+            acc_total = total_correct / total_trials
+            stderr_total = math.sqrt(acc_total * (1 - acc_total) / total_trials)
+            ci_radius_total = 1.96 * stderr_total
+        else:
+            acc_total, ci_radius_total = 0.0, 0.0
 
         summary_rows.append({
             "language": lang,
             "source": "total",
-            "total": total,
-            "correct": correct,
-            "accuracy": round(acc, 4)
+            "total": total_trials,
+            "correct": total_correct,
+            "accuracy": round(acc_total, 4),
+            "ci_radius": round(ci_radius_total, 4),
         })
 
-    summary_csv = os.path.join(args.output_dir, "result.csv")
-    with open(summary_csv, "w", newline="", encoding="utf-8") as f:
+        # ---------- 保存样本 ----------
+        if kept_samples:
+            out_path = os.path.join(args.output_dir, f"{lang}_samples.jsonl")
+            with open(out_path, "w", encoding="utf-8") as f:
+                for r in kept_samples:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+        print(f"✅ {lang}: acc={acc_total:.4f}, ci_radius={ci_radius_total:.4f}")
+
+    # ---------- 保存 summary ----------
+    out_csv = os.path.join(args.output_dir, "result.csv")
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["language", "source", "total", "correct", "accuracy"]
+            fieldnames=["language", "source", "total", "correct", "accuracy", "ci_radius"]
         )
         writer.writeheader()
         writer.writerows(summary_rows)
+
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)

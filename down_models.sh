@@ -1,7 +1,6 @@
 cd ~/autodl-tmp/
 mkdir -p local_model
 cd ./local_model
-export HF_ENDPOINT=https://hf-mirror.com/
 huggingface-cli download \
     --resume-download \
     --local-dir ./Qwen2.5-0.5B-Instruct \
@@ -19,6 +18,6 @@ huggingface-cli download \
     Qwen/Qwen2.5-3B-Instruct
 huggingface-cli download \
     --resume-download \
-    --local-dir ./Qwen2.5-7B-Instruct \
+    --local-dir ./Qwen3-8B \
     --local-dir-use-symlinks False \
-    Qwen/Qwen2.5-7B-Instruct
+    Qwen/Qwen3-8B

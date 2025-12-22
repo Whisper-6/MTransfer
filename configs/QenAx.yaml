@@ -1,36 +1,36 @@
-# QenAx: Question in English, Answer in X language
-# 英文问题，各语言指令和回答
+# QenAxPen: Question in English, Answer in X language, Prompt in English
+# 英文问题，英文指令（但要求用指定语言回答）
 question_field: "query"
 
 languages:
   bn:
     prompt: |
-      প্রশ্নের উত্তর দিন, এবং উত্তরের শেষে চূড়ান্ত সংখ্যাটি $\boxed{{}}$ এর মধ্যে লিখুন।
-      প্রশ্ন: {question}
+      Answer the question in Bengali, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
   de:
     prompt: |
-      Beantworte die Frage und schreibe die endgültige Zahl am Ende der Antwort in $\boxed{{}}$.
-      Frage: {question}
+      Answer the question in German, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
   es:
     prompt: |
-      Responde a la pregunta y encierra el número final al final de la respuesta en $\boxed{{}}$.
-      Pregunta: {question}
+      Answer the question in Spanish, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
   fr:
     prompt: |
-      Réponds à la question et mets le nombre final à la fin de la réponse entre $\boxed{{}}$.
-      Question : {question}
+      Answer the question in French, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
   ja:
     prompt: |
-      質問に答え、最終的な数値を回答の最後に $\boxed{{}}$ で囲んでください。
-      問題: {question}
+      Answer the question in Japanese, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
   ru:
     prompt: |
-      Ответьте на вопрос и заключите окончательное число в конце ответа в $\boxed{{}}$.
-      Вопрос: {question}
+      Answer the question in Russian, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
   th:
     prompt: |
-      ตอบคำถาม และใส่ตัวเลขสุดท้ายไว้ท้ายคำตอบโดยครอบด้วย $\boxed{{}}$.
-      คำถาม: {question}
+      Answer the question in Thai, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Question: {question}
   en:
     prompt: |
       Answer the question, and enclose the final number at the end of the response in $\boxed{{}}$.

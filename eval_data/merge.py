@@ -1,5 +1,6 @@
 import os
 import json
+import re
 
 BASE_DIR = os.getcwd()
 OUTPUT_DIR = os.path.join(BASE_DIR, "mmath")
@@ -20,6 +21,21 @@ def load_jsonl(file_path):
         return [json.loads(line) for line in f if line.strip()]
 
 
+def process_answer(ans):
+    """消除非数字符号，将数字转为整数"""
+    if ans is None:
+        return None
+    # 去掉所有非数字和非小数点的字符
+    clean = re.sub(r"[^\d.]+", "", str(ans))
+    if clean == "":
+        return None
+    # 转整数
+    try:
+        return int(float(clean))
+    except:
+        return None
+
+
 def merge_language(lang):
     """合并单个语言"""
     merged = []
@@ -37,11 +53,12 @@ def merge_language(lang):
 
         for i in range(min(len(lang_data), len(en_data))):
             ex = lang_data[i]
+            ans = process_answer(ex.get("answer"))
             merged.append({
                 "source": ds_info["prefix"] + ex["id"] if ds_info["prefix"] else ex["id"],
                 "query": en_data[i]["question"],
                 "m_query": ex["question"],
-                "answer": ex["answer"]
+                "answer": ans
             })
 
     return merged
