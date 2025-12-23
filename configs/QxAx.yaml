@@ -1,33 +1,40 @@
 languages:
   bn:
     prompt: |
-      প্রশ্নের উত্তর দিন, এবং উত্তরের শেষে চূড়ান্ত সংখ্যাটি $\\boxed{{}}$ এর মধ্যে লিখুন।
-      প্রশ্ন: {question}
+      {question}
+      নিম্নলিখিত গণিত প্রশ্নটি সমাধান করো এবং উত্তরের শেষে চূড়ান্ত সংখ্যাসূচক উত্তরটি $\\boxed{{}}$ এর মধ্যে লেখো। অনুগ্রহ করে বাংলায় উত্তর দাও।
+
   de:
     prompt: |
-      Beantworte die Frage und schreibe die endgültige Zahl am Ende der Antwort in $\\boxed{{}}$.
-      Frage: {question}
+      {question}
+      Löse die folgende Mathematikaufgabe und gib die endgültige numerische Antwort am Ende in $\\boxed{{}}$ an. Bitte antworte auf Deutsch.
+
   es:
     prompt: |
-      Responde a la pregunta y encierra el número final al final de la respuesta en $\\boxed{{}}$.
-      Pregunta: {question}
+      {question}
+      Resuelve la siguiente pregunta de matemáticas y encierra la respuesta numérica final al final en $\\boxed{{}}$. Por favor, responde en español.
+
   fr:
     prompt: |
-      Réponds à la question et mets le nombre final à la fin de la réponse entre $\\boxed{{}}$.
-      Question : {question}
+      {question}
+      Résous la question de mathématiques suivante et encadre la réponse numérique finale à la fin avec $\\boxed{{}}$. Veuillez répondre en français.
+
   ja:
     prompt: |
-      質問に答え、最終的な数値を回答の最後に $\\boxed{{}}$ で囲んでください。
-      問題: {question}
+      {question}
+      次の数学の問題を解き、最後に最終的な数値の答えを $\\boxed{{}}$ で囲んで書いてください。日本語で答えてください。
+
   ru:
     prompt: |
-      Ответьте на вопрос и заключите окончательное число в конце ответа в $\\boxed{{}}$.
-      Вопрос: {question}
+      {question}
+      Реши следующую математическую задачу и заключи окончательный числовой ответ в $\\boxed{{}}$. Пожалуйста, ответьте на русском.
+
   th:
     prompt: |
-      ตอบคำถาม และใส่ตัวเลขสุดท้ายไว้ท้ายคำตอบโดยครอบด้วย $\\boxed{{}}$.
-      คำถาม: {question}
+      {question}
+      แก้โจทย์คณิตศาสตร์ต่อไปนี้ และใส่คำตอบตัวเลขสุดท้ายไว้ท้ายคำตอบโดยครอบด้วย $\\boxed{{}}$. โปรดตอบเป็นภาษาไทย
+
   en:
     prompt: |
-      Answer the question, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question, and enclose the final number at the end of the response in $\\boxed{{}}$.

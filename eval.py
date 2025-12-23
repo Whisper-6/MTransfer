@@ -4,23 +4,18 @@ import csv
 import argparse
 import math
 import multiprocessing as mp
-import random
+import time
 import torch
 from vllm import LLM, SamplingParams
 import yaml
 from tqdm import tqdm
-import time
 from transformers import AutoTokenizer
-
 from utils import last_number_from_text
-
 
 import warnings
 warnings.filterwarnings("ignore", message=".*destroy_process_group.*")
 
-# ----------------------
-# 单进程函数（每 GPU 一个常驻进程）
-# ----------------------
+# ---------------------- worker_process ----------------------
 def worker_process(rank, args, rank_lang_data, config, return_dict, progress):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     torch.cuda.set_device(0)
@@ -42,9 +37,8 @@ def worker_process(rank, args, rank_lang_data, config, return_dict, progress):
         yaml_prompt = config["languages"][lang]["prompt"]
         question_field = config.get("question_field", "m_query")
 
-        # ---------- 构造 prompts（每题 k 次） ----------
+        # ---------- 构造 prompts（每题 num_samples 次） ----------
         all_prompts, prompt_meta, prompt_texts = [], [], []
-
         per_source_qids = {src: [] for src in args.sources}
 
         for ex_id, ex in enumerate(data_slice):
@@ -58,7 +52,10 @@ def worker_process(rank, args, rank_lang_data, config, return_dict, progress):
                 {"role": "user", "content": user_content},
             ]
             prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
             )
 
             for _ in range(args.num_samples):
@@ -78,17 +75,16 @@ def worker_process(rank, args, rank_lang_data, config, return_dict, progress):
             use_tqdm=False,
         )
 
-        # increment shared progress counter: one batch finished
+        # ---------- 更新进度 ----------
         try:
             with progress.get_lock():
                 progress.value += 1
         except Exception:
-            # fallback: ignore if progress isn't available
             pass
 
-        # ---------- per-question 统计 ----------
+        # ---------- 统计 ----------
         per_example_correct = [0] * len(data_slice)
-        kept_correct, kept_wrong = [], []
+        all_records = []
 
         for ex_id, prompt, out in zip(prompt_meta, prompt_texts, outputs):
             ex = data_slice[ex_id]
@@ -108,16 +104,8 @@ def worker_process(rank, args, rank_lang_data, config, return_dict, progress):
                 "answer": ans if ans is not None else "",
                 "is_correct": int(is_correct),
             }
+            all_records.append(record)
 
-            (kept_correct if is_correct else kept_wrong).append(record)
-
-        # ---------- 随机保留样本 ----------
-        random.shuffle(kept_correct)
-        random.shuffle(kept_wrong)
-        kept_correct = kept_correct[:args.keep_correct]
-        kept_wrong = kept_wrong[:args.keep_wrong]
-
-        # ---------- 汇总正确率信息，不计算 CI ----------
         k = args.num_samples
         N = len(data_slice)
         total_correct = sum(per_example_correct)
@@ -141,27 +129,21 @@ def worker_process(rank, args, rank_lang_data, config, return_dict, progress):
             "total_correct": total_correct,
             "total_trials": total_trials,
             "sources": source_stats,
-            "kept_correct": kept_correct,
-            "kept_wrong": kept_wrong,
+            "all_records": all_records,  # 存全部样本
         }
 
     return_dict[rank] = worker_results
-
     del llm
     torch.cuda.empty_cache()
 
 
-# ----------------------
-# 主函数
-# ----------------------
+# ---------------------- main ----------------------
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--num-samples", type=int, default=1)
     parser.add_argument("--num-gpus", type=int, default=torch.cuda.device_count())
-    parser.add_argument("--keep-correct", type=int, default=32)
-    parser.add_argument("--keep-wrong", type=int, default=32)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--data-dir", default="eval_data/mmath")
     parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model")
@@ -170,9 +152,6 @@ def main():
 
     args = parser.parse_args()
     args.sources = ["mgsm", "polymath-low"]
-
-    args.keep_correct = args.keep_correct // args.num_gpus
-    args.keep_wrong = args.keep_wrong // args.num_gpus
 
     if args.output_dir is None:
         args.output_dir = os.path.join("output", args.model, args.config)
@@ -193,23 +172,19 @@ def main():
             data = [json.loads(l) for l in f]
 
         chunk = math.ceil(len(data) / args.num_gpus)
-        all_lang_data[lang] = [
-            data[i * chunk:(i + 1) * chunk] for i in range(args.num_gpus)
-        ]
+        all_lang_data[lang] = [data[i * chunk:(i + 1) * chunk] for i in range(args.num_gpus)]
 
     # ---------- 多进程 ----------
     manager = mp.Manager()
     return_dict = manager.dict()
     processes = []
 
-    # compute total number of generate batches (per-lang per-rank where slice non-empty)
     total_batches = 0
     for lang in all_lang_data:
         for r in range(args.num_gpus):
             if all_lang_data[lang][r]:
                 total_batches += 1
 
-    # shared progress counter
     progress = mp.Value('i', 0)
 
     for rank in range(args.num_gpus):
@@ -221,7 +196,6 @@ def main():
         p.start()
         processes.append(p)
 
-    # display progress bar and wait until all batches complete
     if total_batches > 0:
         with tqdm(total=total_batches, desc="generate batches") as pbar:
             last = 0
@@ -235,17 +209,16 @@ def main():
                     break
                 time.sleep(0.1)
 
-    # ensure all processes finish
     for p in processes:
         p.join()
 
-    # ---------- 汇总与计算 CI ----------
+    # ---------- 汇总结果 ----------
     summary_rows = []
 
     for lang in all_lang_data:
         total_correct = 0
         total_trials = 0
-        kept_samples = []
+        all_samples = []
 
         source_agg = {src: {"correct": 0, "total": 0} for src in args.sources}
 
@@ -255,8 +228,7 @@ def main():
             res = v[lang]
             total_correct += res["total_correct"]
             total_trials += res["total_trials"]
-            kept_samples.extend(res["kept_correct"])
-            kept_samples.extend(res["kept_wrong"])
+            all_samples.extend(res["all_records"])
 
             for src, sres in res["sources"].items():
                 source_agg[src]["correct"] += sres["total_correct"]
@@ -296,16 +268,20 @@ def main():
             "ci_radius": round(ci_radius_total, 4),
         })
 
-        # ---------- 保存样本 ----------
-        if kept_samples:
-            out_path = os.path.join(args.output_dir, f"{lang}_samples.jsonl")
-            with open(out_path, "w", encoding="utf-8") as f:
-                for r in kept_samples:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        # ---------- 保存样本 CSV ----------
+        if all_samples:
+            out_path = os.path.join(args.output_dir, f"{lang}.csv")
+            with open(out_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["language", "source", "prompt", "full_response", "pred_number", "answer", "is_correct"]
+                )
+                writer.writeheader()
+                writer.writerows(all_samples)
 
         print(f"✅ {lang}: acc={acc_total:.4f}, ci_radius={ci_radius_total:.4f}")
 
-    # ---------- 保存 summary ----------
+    # ---------- 保存 summary CSV ----------
     out_csv = os.path.join(args.output_dir, "result.csv")
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(

@@ -1,33 +1,33 @@
 languages:
   bn:
     prompt: |
-      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
   de:
     prompt: |
-      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
   es:
     prompt: |
-      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
   fr:
     prompt: |
-      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
   ja:
     prompt: |
-      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
   ru:
     prompt: |
-      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
   th:
     prompt: |
-      Answer the question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question in English, and enclose the final number at the end of the response in $\\boxed{{}}$.
   en:
     prompt: |
-      Answer the question, and enclose the final number at the end of the response in $\\boxed{{}}$.
-      Question: {question}
+      {question}
+      Solve the above math question, and enclose the final number at the end of the response in $\\boxed{{}}$.

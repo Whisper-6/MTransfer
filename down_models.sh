@@ -1,6 +1,7 @@
 cd ~/autodl-tmp/
 mkdir -p local_model
 cd ./local_model
+export HF_ENDPOINT=https://hf-mirror.com
 huggingface-cli download \
     --resume-download \
     --local-dir ./Qwen2.5-0.5B-Instruct \

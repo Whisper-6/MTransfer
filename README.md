@@ -45,8 +45,8 @@ AutoDL 访问 HuggingFace 需要加速：`source /etc/network_turbo`
 ```bash
 python eval.py \
     --model Qwen2.5-7B-Instruct \
-    --config QxAen \
-    --num-samples 8
+    --config QxAx \
+    --num-samples 16
 ```
 
 参数解释：
@@ -78,22 +78,15 @@ python eval.py \
 
 ## 输出结果
 
-输出包括总分（result.csv）和每个语言回答的抽样（形如 fr_samples.jsonl）
+输出包括总分（result.csv）和每个语言的回答（形如 fr.jsonl）
 
 ## 可视化
 
 绘制雷达图展示各语言的准确率：
 
 ```bash
-# 示例1: default 配置
-python draw_radar.py \
-    --result-csv output/Qwen2.5-7B-Instruct/default/result.csv \
-    --output radar/Qwen2.5-7B-Instruct/default.png
-
-# 示例2: QenAx 配置（英文问题 + 多语言回答）
-python draw_radar.py \
-    --result-csv output/Qwen2.5-7B-Instruct/QenAx/result.csv \
-    --output radar/Qwen2.5-7B-Instruct/QenAx.png
+sh ./vis_radar.sh ./output/Qwen2.5-7B-Instruct/ 0.5 0.9 0.1
+sh ./vis_radar.sh $(结果路径) $(最小值) $(最大值) $(刻度)
 ```
 
-雷达图将展示各小语言（bn, de, es, fr, ja, ru, th）的准确率，以英语准确率作为参考背景。
+雷达图将展示各小语言（bn, de, es, fr, ja, ru, th）的准确率和置信区间，以英语准确率作为参考背景。
