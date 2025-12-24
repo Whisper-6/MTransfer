@@ -24,14 +24,13 @@ language = {
 }
 
 TRANSLATE_PROMPT = (
-    "{question}\n\n"
-    "Translate the above math question from {language} into English, preserving all details. "
-    "Output only the translation, without any extra text."
+    "Problem: {question}\n\n"
+    "Translate the problem from {language} to English, Output only the translation without any extra text."
 )
 
 SOLVE_PROMPT = (
-    "{question}\n\n"
-    "Solve the above math question, and enclose the final number at the end of the response in $\\boxed{{}}$."
+    "Problem: {question}\n\n"
+    "Solve the problem and enclose the final number at the end of the response in $\\boxed{{}}$."
 )
 
 
@@ -200,7 +199,7 @@ def main():
     parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model")
     parser.add_argument("--max_tokens", type=int, default=2048)
     parser.add_argument("--solve-temperature", type=float, default=0.3)
-    parser.add_argument("--translate-temperature", type=float, default=1.0)
+    parser.add_argument("--translate-temperature", type=float, default=0.0)
 
     args = parser.parse_args()
     args.sources = ["mgsm", "polymath-low"]

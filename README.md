@@ -68,8 +68,8 @@ python eval.py \
 
 ```bash
 python eval_QxTenAen.py \
-    --model Qwen2.5-7B-Instruct \
-    --num-samples 16
+    --model Qwen2.5-1.5B-Instruct \
+    --num-samples 8
 ```
 
 ## 配置模式

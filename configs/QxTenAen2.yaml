@@ -1,0 +1,230 @@
+languages:
+  bn:
+    prompt: |
+      Problem: জন এক সপ্তাহে 60 মাইল দৌড়ান। তিনি প্রতি সপ্তাহে 3 দিন দৌড়ান। তিনি প্রথম দিনে 3 ঘণ্টা দৌড়ান এবং অন্য দুদিন তার অর্ধেক দৌড়ান। তিনি কত দ্রুত দৌড়ান?
+      Translate the problem from Bengali into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**  
+      John runs 60 miles in a week. He runs 3 days each week. On the first day he runs for 3 hours, and on the other two days he runs for half that amount of time. How fast does he run?
+
+      **Solution:**  
+      On the first day, John runs for 3 hours.  
+      On the other two days, he runs for half that time, which is 1.5 hours each.
+
+      The total running time is:
+      \[
+      3 + 1.5 + 1.5 = 6
+      \]
+
+      His speed is:
+      \[
+      \frac{{60}}{{6}} = 10
+      \]
+
+      Therefore, the final answer is $\boxed{{10}}$.
+
+      Problem: {question}
+      Translate the problem from Bengali into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**
+
+  de:
+    prompt: |
+      Problem: John läuft in einer Woche 60 Meilen. Er läuft an 3 Tagen pro Woche. Am ersten Tag läuft er 3 Stunden, und an den anderen beiden Tagen läuft er jeweils die Hälfte dieser Zeit. Wie schnell läuft er?
+      Translate the problem from German into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**  
+      John runs 60 miles in a week. He runs 3 days each week. On the first day he runs for 3 hours, and on the other two days he runs for half that amount of time. How fast does he run?
+
+      **Solution:**  
+      On the first day, John runs for 3 hours.  
+      On the other two days, he runs for half that time, which is 1.5 hours each.
+
+      The total running time is:
+      \[
+      3 + 1.5 + 1.5 = 6
+      \]
+
+      His speed is:
+      \[
+      \frac{{60}}{{6}} = 10
+      \]
+
+      Therefore, the final answer is $\boxed{{10}}$.
+
+      Problem: {question}
+      Translate the problem from German into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**
+
+  es:
+    prompt: |
+      Problem: Juan corre 60 millas en una semana. Corre 3 días a la semana. El primer día corre durante 3 horas y los otros dos días corre la mitad de ese tiempo. ¿A qué velocidad corre?
+      Translate the problem from Spanish into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**  
+      John runs 60 miles in a week. He runs 3 days each week. On the first day he runs for 3 hours, and on the other two days he runs for half that amount of time. How fast does he run?
+
+      **Solution:**  
+      On the first day, John runs for 3 hours.  
+      On the other two days, he runs for half that time, which is 1.5 hours each.
+
+      The total running time is:
+      \[
+      3 + 1.5 + 1.5 = 6
+      \]
+
+      His speed is:
+      \[
+      \frac{{60}}{{6}} = 10
+      \]
+
+      Therefore, the final answer is $\boxed{{10}}$.
+
+      Problem: {question}
+      Translate the problem from Spanish into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**
+
+  fr:
+    prompt: |
+      Problem: John court 60 miles en une semaine. Il court 3 jours par semaine. Le premier jour, il court pendant 3 heures, et les deux autres jours, il court pendant la moitié de ce temps. À quelle vitesse court-il ?
+      Translate the problem from French into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**  
+      John runs 60 miles in a week. He runs 3 days each week. On the first day he runs for 3 hours, and on the other two days he runs for half that amount of time. How fast does he run?
+
+      **Solution:**  
+      On the first day, John runs for 3 hours.  
+      On the other two days, he runs for half that time, which is 1.5 hours each.
+
+      The total running time is:
+      \[
+      3 + 1.5 + 1.5 = 6
+      \]
+
+      His speed is:
+      \[
+      \frac{{60}}{{6}} = 10
+      \]
+
+      Therefore, the final answer is $\boxed{{10}}$.
+
+      Problem: {question}
+      Translate the problem from French into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**
+
+  ja:
+    prompt: |
+      Problem: ジョンは1週間に60マイル走ります。彼は毎週3日走ります。初日は3時間走り、残りの2日はその半分の時間走ります。彼の走る速さはどれくらいですか？
+      Translate the problem from Japanese into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**  
+      John runs 60 miles in a week. He runs 3 days each week. On the first day he runs for 3 hours, and on the other two days he runs for half that amount of time. How fast does he run?
+
+      **Solution:**  
+      On the first day, John runs for 3 hours.  
+      On the other two days, he runs for half that time, which is 1.5 hours each.
+
+      The total running time is:
+      \[
+      3 + 1.5 + 1.5 = 6
+      \]
+
+      His speed is:
+      \[
+      \frac{{60}}{{6}} = 10
+      \]
+
+      Therefore, the final answer is $\boxed{{10}}$.
+
+      Problem: {question}
+      Translate the problem from Japanese into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**
+
+  ru:
+    prompt: |
+      Problem: Джон пробегает 60 миль за одну неделю. Он бегает 3 дня в неделю. В первый день он бегает 3 часа, а в остальные два дня — половину этого времени. С какой скоростью он бегает?
+      Translate the problem from Russian into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**  
+      John runs 60 miles in a week. He runs 3 days each week. On the first day he runs for 3 hours, and on the other two days he runs for half that amount of time. How fast does he run?
+
+      **Solution:**  
+      On the first day, John runs for 3 hours.  
+      On the other two days, he runs for half that time, which is 1.5 hours each.
+
+      The total running time is:
+      \[
+      3 + 1.5 + 1.5 = 6
+      \]
+
+      His speed is:
+      \[
+      \frac{{60}}{{6}} = 10
+      \]
+
+      Therefore, the final answer is $\boxed{{10}}$.
+
+      Problem: {question}
+      Translate the problem from Russian into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**
+
+  th:
+    prompt: |
+      Problem: จอห์นวิ่ง 60 ไมล์ในหนึ่งสัปดาห์ เขาวิ่งสัปดาห์ละ 3 วัน ในวันแรกเขาวิ่งเป็นเวลา 3 ชั่วโมง และอีกสองวันเขาวิ่งเป็นเวลาครึ่งหนึ่งของเวลานั้น เขาวิ่งด้วยความเร็วเท่าไร?
+      Translate the problem from Thai into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**  
+      John runs 60 miles in a week. He runs 3 days each week. On the first day he runs for 3 hours, and on the other two days he runs for half that amount of time. How fast does he run?
+
+      **Solution:**  
+      On the first day, John runs for 3 hours.  
+      On the other two days, he runs for half that time, which is 1.5 hours each.
+
+      The total running time is:
+      \[
+      3 + 1.5 + 1.5 = 6
+      \]
+
+      His speed is:
+      \[
+      \frac{{60}}{{6}} = 10
+      \]
+
+      Therefore, the final answer is $\boxed{{10}}$.
+
+      Problem: {question}
+      Translate the problem from Thai into English. Then solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Translation:**
+
+  en:
+    prompt: |
+      Problem: John runs 60 miles in a week. He runs 3 days each week. On the first day he runs for 3 hours, and on the other two days he runs for half that amount of time. How fast does he run?
+      Solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+      
+      **Solution:**  
+      On the first day, John runs for 3 hours.  
+      On the other two days, he runs for half that time, which is 1.5 hours each.
+
+      The total running time is:
+      \[
+      3 + 1.5 + 1.5 = 6
+      \]
+
+      His speed is:
+      \[
+      \frac{{60}}{{6}} = 10
+      \]
+
+      Therefore, the final answer is $\boxed{{10}}$.
+
+      
+      Problem: {question}
+      Solve the problem and enclose the final numeric answer in $\boxed{{}}$.
+
+      **Solution:** 

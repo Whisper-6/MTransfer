@@ -10,5 +10,18 @@ def convert_to_arabic_digits(s):
 
 def last_number_from_text(text):
     text = convert_to_arabic_digits(text)
-    nums = re.findall(r"[-+]?\d+", text)
-    return int(nums[-1]) if nums else None
+    # Prefer the last number inside a \boxed{...} if present (allow decimals)
+    boxed_matches = re.findall(r"\\boxed\{([^}]*)\}", text)
+    number_pattern = r"[-+]?\d+(?:\.\d+)?"
+    if boxed_matches:
+        last_box = boxed_matches[-1]
+        nums_in_box = re.findall(number_pattern, last_box)
+        if nums_in_box:
+            return int(float(nums_in_box[-1]))
+    # Fallback to last number in the whole text (allow decimals)
+    nums = re.findall(number_pattern, text)
+    try:
+        int_num = int(float(nums[-1]))
+    except Exception:
+        int_num = None
+    return int_num
