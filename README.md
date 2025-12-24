@@ -57,14 +57,20 @@ python eval.py \
 | `--config`       | 配置名称       |                             |
 | `--num-gpus`     | 推理用 gpu 数  | 所有 gpu                    |
 | `--num-samples`  | 每题重复采样数 | 1                           |
-| `--keep-correct` | 正确回答保留数 | 32                          |
-| `--keep-wrong`   | 错误回答保留数 | 32                          |
 | `--output-dir`   | 输出路径       | `output/模型名/配置名`      |
 | `--data-dir`     | 数据集路径     | `eval_data/mmath`           |
 | `--model-dir`    | 模型父文件夹   | `~/autodl-tmp/local_model/` |
 | `--max_tokens`   | 最长输出长度   | 2048                        |
 | `--temperature`  | 推理温度       | 0.3                         |
 
+## QxTenAen-2step
+
+
+```bash
+python eval_QxTenAen.py \
+    --model Qwen2.5-7B-Instruct \
+    --num-samples 16
+```
 
 ## 配置模式
 

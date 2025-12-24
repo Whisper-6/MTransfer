@@ -3,38 +3,38 @@ languages:
     prompt: |
       {question}
       First, translate the above math question from Bengali into English, preserving all details.
-      Then, solve the problem based on the English translation and enclose the final numeric answer in $\\boxed{{}}$.
+      Then, solve the problem based on the English translation and enclose the final numeric answer in $\boxed{{}}$.
   de:
     prompt: |
       {question}
       First, translate the above math question from German into English, preserving all details.
-      Then, solve the problem based on the English translation and enclose the final numeric answer in $\\boxed{{}}$.
+      Then, solve the problem based on the English translation and enclose the final numeric answer in $\boxed{{}}$.
   es:
     prompt: |
       {question}
       First, translate the above math question from Spanish into English, preserving all details.
-      Then, solve the problem based on the English translation and enclose the final numeric answer in $\\boxed{{}}$.
+      Then, solve the problem based on the English translation and enclose the final numeric answer in $\boxed{{}}$.
   fr:
     prompt: |
       {question}
       First, translate the above math question from French into English, preserving all details.
-      Then, solve the problem based on the English translation and enclose the final numeric answer in $\\boxed{{}}$.
+      Then, solve the problem based on the English translation and enclose the final numeric answer in $\boxed{{}}$.
   ja:
     prompt: |
       {question}
       First, translate the above math question from Japanese into English, preserving all details.
-      Then, solve the problem based on the English translation and enclose the final numeric answer in $\\boxed{{}}$.
+      Then, solve the problem based on the English translation and enclose the final numeric answer in $\boxed{{}}$.
   ru:
     prompt: |
       {question}
       First, translate the above math question from Russian into English, preserving all details.
-      Then, solve the problem based on the English translation and enclose the final numeric answer in $\\boxed{{}}$.
+      Then, solve the problem based on the English translation and enclose the final numeric answer in $\boxed{{}}$.
   th:
     prompt: |
       {question}
       First, translate the above math question from Thai into English, preserving all details.
-      Then, solve the problem based on the English translation and enclose the final numeric answer in $\\boxed{{}}$.
+      Then, solve the problem based on the English translation and enclose the final numeric answer in $\boxed{{}}$.
   en:
     prompt: |
       {question}
-      Solve the above math question and enclose the final numeric answer in $\\boxed{{}}$.
+      Solve the above math question and enclose the final numeric answer in $\boxed{{}}$.

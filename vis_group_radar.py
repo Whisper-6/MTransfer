@@ -22,7 +22,7 @@ args = parser.parse_args()
 root_dir = args.result_dir
 radar_min, radar_max = args.min, args.max  # 雷达图刻度范围
 # 只比较指定子文件夹
-subfolders_to_plot = ["QxAen", "QxTenAen", "QxAx"]
+subfolders_to_plot = ["QxAen", "QxTenAen", "QxAx", "QxTenAen-2step"]
 
 # ----------------------
 # 收集各子文件夹数据

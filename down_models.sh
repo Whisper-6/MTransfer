@@ -22,3 +22,13 @@ huggingface-cli download \
     --local-dir ./Qwen3-8B \
     --local-dir-use-symlinks False \
     Qwen/Qwen3-8B
+huggingface-cli download \
+    --resume-download \
+    --local-dir ./Qwen3-4B \
+    --local-dir-use-symlinks False \
+    Qwen/Qwen3-4B
+huggingface-cli download \
+    --resume-download \
+    --local-dir ./Qwen3-4B \
+    --local-dir-use-symlinks False \
+    Qwen/Qwen3-4B
