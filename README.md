@@ -65,11 +65,53 @@ python eval.py \
 
 ## QxTenAen-2step
 
-
 ```bash
 python eval_QxTenAen.py \
     --model Qwen2.5-1.5B-Instruct \
     --num-samples 8
+```
+
+## QxTenAen_mask（分层 Attention Masking）
+
+实现带有分层 attention masking 的评估，研究模型前 N 层"看不见"翻译时的解题能力。包含两个原子操作：
+
+### Step 1: 翻译（执行一次）
+
+```bash
+python eval_QxTenAen_mask.py \
+    --operation translate \
+    --model Qwen2.5-7B-Instruct \
+    --num-samples 1
+```
+
+翻译结果保存在 `tmp/{model}/` 目录，包含：source (唯一标识), original_question, translation, answer
+
+### Step 2: 解题（可测试不同 mask 层数）
+
+```bash
+# 测试前 8 层不能看到翻译
+python eval_QxTenAen_mask.py \
+    --operation solve \
+    --model Qwen2.5-7B-Instruct \
+    --num-mask-layers 8
+```
+
+**说明**：
+- solve 操作无需指定 `--num-samples`（自动从翻译结果推断）
+- 结果保存在 `output/{model}/QxTenAen_mask/layer_{N}/`
+- `--num-mask-layers 0`：所有层可见翻译（相当于 QxTenAen-2step-v2）
+- 翻译使用 vLLM（速度快），solve 使用 transformers（支持自定义 attention hook）
+
+### 批量测试示例
+
+```bash
+# 翻译一次
+python eval_QxTenAen_mask.py --operation translate --model Qwen2.5-7B-Instruct --num-samples 1
+
+# 测试多个 mask 层数（Qwen2.5-7B 有 28 层）
+for layers in 0 7 14 21 28; do
+    python eval_QxTenAen_mask.py --operation solve --model Qwen2.5-7B-Instruct --num-mask-layers $layers
+done
 ```
 
 ## 配置模式
@@ -88,11 +130,22 @@ python eval_QxTenAen.py \
 
 ## 可视化
 
-绘制雷达图展示各语言的准确率：
+使用统一的可视化脚本生成所有图表（标准配置 + mask 配置）：
 
 ```bash
-sh ./vis_radar.sh ./output/Qwen2.5-7B-Instruct/ 0.5 0.9 0.1
-sh ./vis_radar.sh $(结果路径) $(最小值) $(最大值) $(刻度)
+python vis_radar.py --result-dir output/Qwen2.5-7B-Instruct
 ```
 
-雷达图将展示各小语言（bn, de, es, fr, ja, ru, th）的准确率和置信区间，以英语准确率作为参考背景。
+**可选参数**：
+
+```bash
+python vis_radar.py --result-dir output/Qwen2.5-7B-Instruct --min 0.0 --max 1.0 --scale 0.1
+```
+
+**生成的图表**：
+- 每个配置的单独雷达图（`{config}/radar.png`）
+- 标准配置对比图（`radar_comparison.png`、`mean_accuracy_bar.png`）
+- Mask 配置对比图（`QxTenAen_mask/radar_comparison.png`、`mean_accuracy_bar.png`）
+- 统一对比图（`unified_radar_comparison.png`、`unified_mean_accuracy_bar.png`）
+
+雷达图展示各小语言（bn, de, es, fr, ja, ru, th）的准确率和置信区间，以英语准确率作为统一 baseline（灰色背景）。
