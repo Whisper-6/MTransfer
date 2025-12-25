@@ -1,0 +1,158 @@
+{
+    "log": {
+      "loglevel": "warning"
+    },
+    "inbounds": [
+        {
+          "tag": "socks",
+          "port": 10809,
+          "listen": "0.0.0.0",
+          "protocol": "socks",
+          "sniffing": {
+            "enabled": true,
+            "destOverride": [
+              "http",
+              "tls"
+            ],
+            "routeOnly": false
+          },
+          "settings": {
+            "auth": "noauth",
+            "udp": true,
+            "allowTransparent": false
+          }
+        },
+        {
+          "tag": "http",
+          "port": 10810,
+          "listen": "0.0.0.0",
+          "protocol": "http",
+          "settings": {
+            "timeout": 0,
+            "allowTransparent": false
+          }
+        }
+      ],
+    "outbounds": [
+      {
+        "tag": "proxy",
+        "protocol": "vless",
+        "settings": {
+          "vnext": [
+            {
+              "address": "74.211.111.232",
+              "port": 4443,
+              "users": [
+                {
+                  "id": "67233fb2-2922-4a82-9863-add95987408e",
+                  "email": "t@t.tt",
+                  "security": "auto",
+                  "encryption": "none"
+                }
+              ]
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "xhttp",
+          "security": "reality",
+          "xhttpSettings": {
+            "path": "/67233fb2",
+            "mode": "auto"
+          },
+          "realitySettings": {
+            "serverName": "www.yahoo.com",
+            "fingerprint": "chrome",
+            "show": false,
+            "publicKey": "B6-7hgwlSq6-y5TjWiXLTK6A4r_TdK34iV-NXOK-AUc",
+            "shortId": "e392838b",
+            "spiderX": ""
+          }
+        },
+        "mux": {
+          "enabled": false,
+          "concurrency": -1
+        }
+      },
+      {
+        "tag": "direct",
+        "protocol": "freedom"
+      },
+      {
+        "tag": "block",
+        "protocol": "blackhole"
+      }
+    ],
+    "dns": {
+      "hosts": {
+        "dns.google": "8.8.8.8",
+        "proxy.example.com": "127.0.0.1"
+      },
+      "servers": [
+        {
+          "address": "1.1.1.1",
+          "domains": [
+            "geosite:geolocation-!cn"
+          ],
+          "expectIPs": [
+            "geoip:!cn"
+          ]
+        },
+        {
+          "address": "223.5.5.5",
+          "domains": [
+            "geosite:cn"
+          ],
+          "expectIPs": [
+            "geoip:cn"
+          ]
+        },
+        "8.8.8.8",
+        "https://dns.google/dns-query"
+      ]
+    },
+    "routing": {
+      "domainStrategy": "AsIs",
+      "rules": [
+        {
+          "type": "field",
+          "inboundTag": [
+            "api"
+          ],
+          "outboundTag": "api"
+        },
+        {
+          "type": "field",
+          "port": "443",
+          "network": "udp",
+          "outboundTag": "block"
+        },
+        {
+          "type": "field",
+          "outboundTag": "block",
+          "domain": [
+            "geosite:category-ads-all"
+          ]
+        },
+        {
+          "type": "field",
+          "outboundTag": "direct",
+          "ip": [
+            "geoip:private"
+          ]
+        },
+        {
+          "type": "field",
+          "outboundTag": "direct",
+          "domain": [
+            "geosite:private"
+          ]
+        },
+        {
+          "type": "field",
+          "port": "0-65535",
+          "outboundTag": "proxy"
+        }
+      ]
+    }
+  }
