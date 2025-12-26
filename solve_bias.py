@@ -202,7 +202,7 @@ class LayerwiseMaskController:
 
 # ---------------------- Solve Worker ---------------------- #
 def worker_solve(rank, args, rank_lang_data, return_dict, progress):
-    """解题操作：使用加性 bias mask + FlashAttention2"""
+    """解题操作：合并所有语言，按 token 长度排序分 batch，使用加性 bias mask"""
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     torch.cuda.set_device(0)
     device = "cuda"
@@ -210,7 +210,6 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
     model_path = os.path.join(args.model_dir, args.model)
     print(f"[Rank {rank}] Loading model from {model_path}...")
 
-    # 统一使用 SDPA，mask_layers>0 时通过 sdp_kernel 强制 math 后端
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype="auto",
@@ -219,275 +218,105 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
         attn_implementation="sdpa",
     )
     print(f"[Rank {rank}] Using SDPA attention")
-
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    worker_results = {}
+    # ---- 合并所有语言的数据，预计算 token 信息 ----
+    all_items = []
+    total_samples = sum(len(data_slice) for data_slice in rank_lang_data.values() if data_slice)
+    print(f"[Rank {rank}] Preparing {total_samples} samples across {len(rank_lang_data)} languages...")
 
     for lang, data_slice in rank_lang_data.items():
         if not data_slice:
             continue
-
-        print(
-            f"[Rank {rank}] Solving {lang}: {len(data_slice)} samples, mask_layers={args.num_mask_layers}"
-        )
-
-        # 聚合题目（source 唯一）
-        unique_questions = {}
         for item in data_slice:
-            src = item["source"]
-            if src not in unique_questions:
-                unique_questions[src] = {
-                    "original_question": item["original_question"],
-                    "answer": item["answer"],
-                    "source": item["source"],
-                }
+            solve_user_content = SOLVE_PROMPT.format(
+                question=item["original_question"],
+                translation=item["translation"],
+            )
+            solve_prompt = build_chat_prompt(tokenizer, solve_user_content)
 
-        N = len(unique_questions)
-        num_samples = len(data_slice) // N if N > 0 else 1
+            # Tokenize 并计算翻译区间
+            enc = tokenizer(solve_prompt, add_special_tokens=False, return_offsets_mapping=True)
+            input_ids = enc["input_ids"]
+            offsets = enc.get("offset_mapping", None)
 
-        per_source_qids = {src: [] for src in args.sources}
-        for source_id, ex_info in unique_questions.items():
-            for src in args.sources:
-                if src in ex_info["source"]:
-                    per_source_qids[src].append(source_id)
-
-        per_example_correct = {source_id: 0 for source_id in unique_questions}
-        all_records = []
-
-        batch_size = getattr(args, "batch_size", 8)
-        num_batches = (len(data_slice) + batch_size - 1) // batch_size
-        pbar = tqdm(
-            total=len(data_slice),
-            desc=f"[Rank {rank}] {lang}",
-            unit="sample",
-            leave=False,
-        )
-
-        for batch_idx in range(num_batches):
-            batch_start = batch_idx * batch_size
-            batch_end = min(batch_start + batch_size, len(data_slice))
-            batch_items = data_slice[batch_start:batch_end]
-
-            raw_input_ids = []
-            raw_translation_ranges = []
-            batch_metadata = []
-
-            # 构造 prompts & 计算翻译区间
-            for item in batch_items:
-                source_id = item["source"]
-                ex_info = unique_questions[source_id]
-
-                solve_user_content = SOLVE_PROMPT.format(
-                    question=item["original_question"],
-                    translation=item["translation"],
-                )
-                solve_prompt = build_chat_prompt(tokenizer, solve_user_content)
-
-                # 使用 offset_mapping 精确定位翻译区间，避免 tokenizer 在边界处合并 token 导致 off-by-one
-                enc = tokenizer(
-                    solve_prompt,
-                    add_special_tokens=False,
-                    return_offsets_mapping=True,
-                # 使用 offset_mapping 精确定位翻译区间，避免 tokenizer 在边界处合并 token 导致 off-by-one
-                enc = tokenizer(
-                    solve_prompt,
-                    add_special_tokens=False,
-                    return_offsets_mapping=True,
-                )
-                input_ids = enc["input_ids"]
-                offsets = enc.get("offset_mapping", None)
-
-                solve_part_start = solve_prompt.find(
-                    "\n\nSolve the above problem"
-                )
-                if offsets:
-                    # 起点包含 "Translation:" 标签本身
-                    start_char = solve_prompt.index("Translation:")
-                    end_char = (
-                        solve_part_start
-                        if solve_part_start > 0
-                        else len(solve_prompt)
-                    )
-                    translation_start_idx = next(
-                        i for i, (s, e) in enumerate(offsets) if e > start_char
-                    )
-                    translation_end_idx = (
-                        max(i for i, (s, e) in enumerate(offsets) if s < end_char)
-                        + 1
-                    )
+            solve_part_start = solve_prompt.find("\n\nSolve the above problem")
+            if offsets:
+                start_char = solve_prompt.index("Translation:")
+                end_char = solve_part_start if solve_part_start > 0 else len(solve_prompt)
+                translation_start_idx = next(i for i, (s, e) in enumerate(offsets) if e > start_char)
+                translation_end_idx = max(i for i, (s, e) in enumerate(offsets) if s < end_char) + 1
+            else:
+                problem_part = solve_prompt.split("Translation:")[0]
+                problem_ids = tokenizer.encode(problem_part, add_special_tokens=False)
+                translation_start_idx = len(problem_ids)
+                if solve_part_start > 0:
+                    pre_solve_ids = tokenizer.encode(solve_prompt[:solve_part_start], add_special_tokens=False)
+                    translation_end_idx = len(pre_solve_ids)
                 else:
-                    # 退回旧逻辑（不依赖 offset_mapping）
-                    problem_part = solve_prompt.split("Translation:")[0]
-                    problem_ids = tokenizer.encode(
-                        problem_part, add_special_tokens=False
-                    )
-                    translation_start_idx = len(problem_ids)
-                    if solve_part_start > 0:
-                        pre_solve = solve_prompt[:solve_part_start]
-                        pre_solve_ids = tokenizer.encode(
-                            pre_solve, add_special_tokens=False
-                        )
-                        translation_end_idx = len(pre_solve_ids)
-                    else:
-                        translation_end_idx = len(input_ids)
-                input_ids = enc["input_ids"]
-                offsets = enc.get("offset_mapping", None)
+                    translation_end_idx = len(input_ids)
 
-                solve_part_start = solve_prompt.find(
-                    "\n\nSolve the above problem"
-                )
-                if offsets:
-                    # 起点包含 "Translation:" 标签本身
-                    start_char = solve_prompt.index("Translation:")
-                    end_char = (
-                        solve_part_start
-                        if solve_part_start > 0
-                        else len(solve_prompt)
-                    )
-                    translation_start_idx = next(
-                        i for i, (s, e) in enumerate(offsets) if e > start_char
-                    )
-                    translation_end_idx = (
-                        max(i for i, (s, e) in enumerate(offsets) if s < end_char)
-                        + 1
-                    )
-                else:
-                    # 退回旧逻辑（不依赖 offset_mapping）
-                    problem_part = solve_prompt.split("Translation:")[0]
-                    problem_ids = tokenizer.encode(
-                        problem_part, add_special_tokens=False
-                    )
-                    translation_start_idx = len(problem_ids)
-                    if solve_part_start > 0:
-                        pre_solve = solve_prompt[:solve_part_start]
-                        pre_solve_ids = tokenizer.encode(
-                            pre_solve, add_special_tokens=False
-                        )
-                        translation_end_idx = len(pre_solve_ids)
-                    else:
-                        translation_end_idx = len(input_ids)
+            all_items.append({
+                "lang": lang,
+                "item": item,
+                "input_ids": input_ids,
+                "input_len": len(input_ids),
+                "translation_range": (translation_start_idx, translation_end_idx),
+            })
 
-                # 仅首条样例打印翻译区间及上下文，检查是否误遮题干
-                if getattr(args, "debug_mask_span", False) and batch_idx == 0 and len(raw_input_ids) == 0:
-                    # question_tail 去掉 "Translation:" 标签，方便观察题干末尾
-                    if offsets:
-                        label_char = solve_prompt.index("Translation:")
-                        label_tok = next(i for i, (s, e) in enumerate(offsets) if e > label_char)
-                        before_tail = tokenizer.decode(
-                            input_ids[:label_tok]
-                        )
-                    else:
-                        before_tail = tokenizer.decode(
-                            input_ids[:translation_start_idx]
-                        )
+    # ---- 按 token 长度排序，减少 padding 开销 ----
+    all_items.sort(key=lambda x: x["input_len"])
+    print(f"[Rank {rank}] Sorted by length: min={all_items[0]['input_len']}, max={all_items[-1]['input_len']}")
 
-                    span = tokenizer.decode(
-                        input_ids[translation_start_idx:translation_end_idx]
+    # ---- 分 batch 处理 ----
+    batch_size = getattr(args, "batch_size", 8)
+    all_records = []
+
+    pbar = tqdm(total=len(all_items), desc=f"[Rank {rank}] Solving", unit="sample", leave=False)
+
+    for batch_start in range(0, len(all_items), batch_size):
+        batch_end = min(batch_start + batch_size, len(all_items))
+        batch_items = all_items[batch_start:batch_end]
+
+        # 左侧 padding 对齐
+        max_input_len = max(it["input_len"] for it in batch_items)
+        padded_input_ids = []
+        adjusted_ranges = []
+        batch_metadata = []
+
+        for it in batch_items:
+            ids = torch.tensor(it["input_ids"], dtype=torch.long)
+            pad_len = max_input_len - len(ids)
+            if pad_len > 0:
+                padding = torch.full((pad_len,), tokenizer.pad_token_id, dtype=torch.long)
+                padded_ids = torch.cat([padding, ids], dim=0)
+            else:
+                padded_ids = ids
+            padded_input_ids.append(padded_ids)
+
+            start, end = it["translation_range"]
+            adjusted_ranges.append((start + pad_len, end + pad_len))
+            batch_metadata.append(it)
+
+        input_tensor = torch.stack(padded_input_ids).to(device)
+        attention_mask = (input_tensor != tokenizer.pad_token_id).long()
+
+        # 生成
+        try:
+            from torch.backends.cuda import sdp_kernel
+            with torch.inference_mode(), sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
+                if args.num_mask_layers > 0:
+                    mask_controller = LayerwiseMaskController(
+                        num_mask_layers=args.num_mask_layers,
+                        translation_ranges=adjusted_ranges,
+                        device=device,
                     )
-                    after_head = tokenizer.decode(
-                        input_ids[translation_end_idx:translation_end_idx + 120]
-                    )[:120]
-                    print(f"[Debug][Rank {rank}] translation span: {span[:200]}...")
-                    print(f"[Debug][Rank {rank}] before span tail: {before_tail}")
-                    print(f"[Debug][Rank {rank}] after span head: {after_head}")
-
-                # 仅首条样例打印翻译区间及上下文，检查是否误遮题干
-                if getattr(args, "debug_mask_span", False) and batch_idx == 0 and len(raw_input_ids) == 0:
-                    # question_tail 去掉 "Translation:" 标签，方便观察题干末尾
-                    if offsets:
-                        label_char = solve_prompt.index("Translation:")
-                        label_tok = next(i for i, (s, e) in enumerate(offsets) if e > label_char)
-                        before_tail = tokenizer.decode(
-                            input_ids[:label_tok]
-                        )
-                    else:
-                        before_tail = tokenizer.decode(
-                            input_ids[:translation_start_idx]
-                        )
-
-                    span = tokenizer.decode(
-                        input_ids[translation_start_idx:translation_end_idx]
-                    )
-                    after_head = tokenizer.decode(
-                        input_ids[translation_end_idx:translation_end_idx + 120]
-                    )[:120]
-                    print(f"[Debug][Rank {rank}] translation span: {span[:200]}...")
-                    print(f"[Debug][Rank {rank}] before span tail: {before_tail}")
-                    print(f"[Debug][Rank {rank}] after span head: {after_head}")
-
-                raw_input_ids.append(torch.tensor(input_ids, dtype=torch.long))
-                raw_translation_ranges.append(
-                    (translation_start_idx, translation_end_idx)
-                )
-                batch_metadata.append(
-                    {
-                        "source_id": source_id,
-                        "ex_info": ex_info,
-                        "item": item,
-                        "input_len": len(input_ids),
-                    }
-                )
-
-            # 左侧 padding 对齐并调整区间
-            max_input_len = max(len(ids) for ids in raw_input_ids)
-            padded_input_ids = []
-            adjusted_ranges = []
-
-            for ids, (start, end) in zip(raw_input_ids, raw_translation_ranges):
-                pad_len = max_input_len - len(ids)
-                if pad_len > 0:
-                    padding = torch.full(
-                        (pad_len,), tokenizer.pad_token_id, dtype=torch.long
-                    )
-                    padded_ids = torch.cat([padding, ids], dim=0)
-                else:
-                    padded_ids = ids
-                padded_input_ids.append(padded_ids)
-                adjusted_ranges.append((start + pad_len, end + pad_len))
-                if getattr(args, "debug_mask_span", False) and batch_idx == 0:
-                    print(
-                        f"[Debug][Rank {rank}] adjusted range: {(start + pad_len, end + pad_len)}, "
-                        f"padded_len: {len(padded_ids)}"
-                    )
-                if getattr(args, "debug_mask_span", False) and batch_idx == 0:
-                    print(
-                        f"[Debug][Rank {rank}] adjusted range: {(start + pad_len, end + pad_len)}, "
-                        f"padded_len: {len(padded_ids)}"
-                    )
-
-            input_tensor = torch.stack(padded_input_ids).to(device)
-            attention_mask = (input_tensor != tokenizer.pad_token_id).long()
-
-            # 生成（统一使用 SDPA math 后端，保证 mask_layers=0 和 >0 行为一致）
-            try:
-                from torch.backends.cuda import sdp_kernel
-                with torch.inference_mode(), sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
-                    if args.num_mask_layers > 0:
-                        mask_controller = LayerwiseMaskController(
-                            num_mask_layers=args.num_mask_layers,
-                            translation_ranges=adjusted_ranges,
-                            device=device,
-                        )
-                        with mask_controller.register_hooks(model):
-                            outputs = model.generate(
-                                input_tensor,
-                                attention_mask=attention_mask,
-                                max_new_tokens=args.max_tokens,
-                                temperature=args.solve_temperature,
-                                do_sample=(args.solve_temperature > 0),
-                                use_cache=True,
-                                pad_token_id=tokenizer.pad_token_id,
-                            )
-                    else:
+                    with mask_controller.register_hooks(model):
                         outputs = model.generate(
                             input_tensor,
                             attention_mask=attention_mask,
@@ -495,95 +324,80 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
                             temperature=args.solve_temperature,
                             do_sample=(args.solve_temperature > 0),
                             use_cache=True,
+                            top_p=0.9,
+                            top_k=50,
                             pad_token_id=tokenizer.pad_token_id,
                         )
-
-                for i, output_ids in enumerate(outputs):
-                    meta = batch_metadata[i]
-                    generated_part = output_ids[max_input_len:]
-                    text = tokenizer.decode(
-                        generated_part, skip_special_tokens=True
-                    ).strip()
-
-                    pred = last_number_from_text(text)
-                    ans = meta["ex_info"]["answer"]
-                    is_correct = int(pred == ans)
-                    per_example_correct[meta["source_id"]] += is_correct
-
-                    all_records.append(
-                        {
-                            "language": lang,
-                            "source": meta["ex_info"]["source"],
-                            "original_question": meta["ex_info"]["original_question"],
-                            "translated_question": meta["item"]["translation"],
-                            "full_response": text,
-                            "pred_number": pred if pred is not None else "",
-                            "answer": ans if ans is not None else "",
-                            "is_correct": is_correct,
-                        }
+                else:
+                    outputs = model.generate(
+                        input_tensor,
+                        attention_mask=attention_mask,
+                        max_new_tokens=args.max_tokens,
+                        temperature=args.solve_temperature,
+                        do_sample=(args.solve_temperature > 0),
+                        use_cache=True,
+                        top_p=0.9,
+                        top_k=50,
+                        pad_token_id=tokenizer.pad_token_id,
                     )
 
-            except Exception as e:
-                print(f"[Rank {rank}] Batch error: {e}")
-                import traceback
+            for i, output_ids in enumerate(outputs):
+                meta = batch_metadata[i]
+                generated_part = output_ids[max_input_len:]
+                text = tokenizer.decode(generated_part, skip_special_tokens=True).strip()
 
-                traceback.print_exc()
-                for meta in batch_metadata:
-                    all_records.append(
-                        {
-                            "language": lang,
-                            "source": meta["ex_info"]["source"],
-                            "original_question": meta["ex_info"]["original_question"],
-                            "translated_question": meta["item"]["translation"],
-                            "full_response": "",
-                            "pred_number": "",
-                            "answer": meta["ex_info"]["answer"]
-                            if meta["ex_info"]["answer"] is not None
-                            else "",
-                            "is_correct": 0,
-                        }
-                    )
+                pred = last_number_from_text(text)
+                ans = meta["item"]["answer"]
+                is_correct = int(pred == ans)
 
-            pbar.update(len(batch_items))
-            if all_records:
-                cur_acc = sum(r["is_correct"] for r in all_records) / len(
-                    all_records
-                )
-                pbar.set_postfix({"acc": f"{cur_acc:.3f}"})
+                all_records.append({
+                    "language": meta["lang"],
+                    "source": meta["item"]["source"],
+                    "original_question": meta["item"]["original_question"],
+                    "translated_question": meta["item"]["translation"],
+                    "full_response": text,
+                    "pred_number": pred if pred is not None else "",
+                    "answer": ans if ans is not None else "",
+                    "is_correct": is_correct,
+                })
 
-        pbar.close()
+        except Exception as e:
+            print(f"[Rank {rank}] Batch error: {e}")
+            import traceback
+            traceback.print_exc()
+            for meta in batch_metadata:
+                all_records.append({
+                    "language": meta["lang"],
+                    "source": meta["item"]["source"],
+                    "original_question": meta["item"]["original_question"],
+                    "translated_question": meta["item"]["translation"],
+                    "full_response": "",
+                    "pred_number": "",
+                    "answer": meta["item"]["answer"] if meta["item"]["answer"] is not None else "",
+                    "is_correct": 0,
+                })
 
-        # 汇总统计
-        k = num_samples
-        total_correct = sum(per_example_correct.values())
-        total_trials = N * k
+        pbar.update(len(batch_items))
+        if all_records:
+            cur_acc = sum(r["is_correct"] for r in all_records) / len(all_records)
+            pbar.set_postfix({"acc": f"{cur_acc:.3f}"})
 
-        source_stats = {}
-        for src in args.sources:
-            ids = per_source_qids[src]
-            if not ids:
-                continue
-            correct_src = sum(per_example_correct[i] for i in ids)
-            total_src = len(ids) * k
-            source_stats[src] = {
-                "num_questions": len(ids),
-                "total_correct": correct_src,
-                "total_trials": total_src,
-            }
+    pbar.close()
 
+    # ---- 按语言分组统计结果 ----
+    worker_results = {}
+    for lang in rank_lang_data.keys():
+        lang_records = [r for r in all_records if r["language"] == lang]
+        if not lang_records:
+            continue
         worker_results[lang] = {
-            "num_questions": N,
-            "total_correct": total_correct,
-            "total_trials": total_trials,
-            "sources": source_stats,
-            "all_records": all_records,
+            "all_records": lang_records,
         }
 
     return_dict[rank] = worker_results
     del model
     torch.cuda.empty_cache()
 
-    # 标记该 rank 完成
     try:
         with progress.get_lock():
             progress.value += 1
@@ -646,11 +460,6 @@ def main():
         action="store_true",
         help="打印首条样例的翻译区间及前后内容，辅助检查 mask 对齐",
     )
-    parser.add_argument(
-        "--debug-mask-span",
-        action="store_true",
-        help="打印首条样例的翻译区间及前后内容，辅助检查 mask 对齐",
-    )
 
     args = parser.parse_args()
     args.sources = ["mgsm", "polymath-low"]
@@ -676,8 +485,13 @@ def main():
         print("   请先运行 translate 流程生成翻译文件。")
         return
 
-    all_lang_data = {}
     langs = []
+    all_items_raw = []  # 收集所有样本
+
+    # 加载 tokenizer 用于预计算长度
+    model_path = os.path.join(args.model_dir, args.model)
+    print(f"Loading tokenizer from {model_path} for length estimation...")
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
     for fname in os.listdir(translation_dir):
         if not fname.endswith(".jsonl"):
@@ -698,14 +512,39 @@ def main():
                 f"   {lang}: {num_questions} questions × {num_samples} samples = {len(data)} translations"
             )
 
-        chunk = math.ceil(len(data) / args.num_gpus)
-        all_lang_data[lang] = [
-            data[i * chunk : (i + 1) * chunk] for i in range(args.num_gpus)
-        ]
+        # 预计算每个样本的 token 长度
+        for item in data:
+            solve_user_content = SOLVE_PROMPT.format(
+                question=item["original_question"],
+                translation=item["translation"],
+            )
+            solve_prompt = build_chat_prompt(tokenizer, solve_user_content)
+            input_ids = tokenizer.encode(solve_prompt, add_special_tokens=False)
+            all_items_raw.append({
+                "lang": lang,
+                "item": item,
+                "input_len": len(input_ids),
+            })
 
-    if not all_lang_data:
+    if not all_items_raw:
         print(f"❌ No translation files found in {translation_dir}")
         return
+
+    # 按 token 长度排序，然后 round-robin 分配给各 GPU
+    all_items_raw.sort(key=lambda x: x["input_len"])
+    print(f"Sorted {len(all_items_raw)} samples by length: min={all_items_raw[0]['input_len']}, max={all_items_raw[-1]['input_len']}")
+
+    # Round-robin 分配：排序后的第 i 个样本分给 GPU i % num_gpus
+    all_lang_data = {lang: [[] for _ in range(args.num_gpus)] for lang in langs}
+    for i, item_info in enumerate(all_items_raw):
+        rank = i % args.num_gpus
+        lang = item_info["lang"]
+        all_lang_data[lang][rank].append(item_info["item"])
+
+    # 打印分配情况
+    for rank in range(args.num_gpus):
+        total = sum(len(all_lang_data[lang][rank]) for lang in langs)
+        print(f"   GPU {rank}: {total} samples")
 
     # 输出目录
     output_dir = os.path.join(
@@ -755,52 +594,48 @@ def main():
     for p in processes:
         p.join()
 
-    # 汇总并保存
+    # 汇总并保存：直接从 all_samples 统计，避免 worker 中 N*k 整除误差
     summary_rows = []
 
     for lang in langs:
-        total_correct = 0
-        total_trials = 0
         all_samples = []
-        source_agg = {src: {"correct": 0, "total": 0} for src in args.sources}
 
         for v in return_dict.values():
             if lang not in v:
                 continue
             res = v[lang]
-            total_correct += res["total_correct"]
-            total_trials += res["total_trials"]
             all_samples.extend(res["all_records"])
-            for src, sres in res["sources"].items():
-                source_agg[src]["correct"] += sres["total_correct"]
-                source_agg[src]["total"] += sres["total_trials"]
 
+        if not all_samples:
+            continue
+
+        # 直接从 all_samples 统计，最准确
+        total_trials = len(all_samples)
+        total_correct = sum(r["is_correct"] for r in all_samples)
+
+        # 按 source 分别统计
         for src in args.sources:
-            agg = source_agg[src]
-            if agg["total"] == 0:
+            src_samples = [r for r in all_samples if src in r["source"]]
+            if not src_samples:
                 continue
-            acc = agg["correct"] / agg["total"]
-            stderr = math.sqrt(acc * (1 - acc) / agg["total"])
+            src_total = len(src_samples)
+            src_correct = sum(r["is_correct"] for r in src_samples)
+            acc = src_correct / src_total
+            stderr = math.sqrt(acc * (1 - acc) / src_total)
             ci_radius = 1.96 * stderr
             summary_rows.append(
                 {
                     "language": lang,
                     "source": src,
-                    "total": agg["total"],
-                    "correct": agg["correct"],
+                    "total": src_total,
+                    "correct": src_correct,
                     "accuracy": round(acc, 4),
                     "ci_radius": round(ci_radius, 4),
                 }
             )
 
-        acc_total = (
-            total_correct / total_trials if total_trials else 0.0
-        )
-        stderr_total = (
-            math.sqrt(acc_total * (1 - acc_total) / total_trials)
-            if total_trials
-            else 0.0
-        )
+        acc_total = total_correct / total_trials
+        stderr_total = math.sqrt(acc_total * (1 - acc_total) / total_trials)
         ci_radius_total = 1.96 * stderr_total
         summary_rows.append(
             {
@@ -880,36 +715,14 @@ def worker_vllm(rank, args, rank_lang_data, return_dict, progress):
             max_tokens=args.max_tokens,
         )
 
-        worker_results = {}
+        all_records = []
 
+        # 收集所有语言的 prompts 和 metas
+        prompts = []
+        metas = []
         for lang, data_slice in rank_lang_data.items():
             if not data_slice:
                 continue
-
-            unique_questions = {}
-            for item in data_slice:
-                src = item["source"]
-                if src not in unique_questions:
-                    unique_questions[src] = {
-                        "original_question": item["original_question"],
-                        "answer": item["answer"],
-                        "source": item["source"],
-                    }
-
-            N = len(unique_questions)
-            num_samples = len(data_slice) // N if N > 0 else 1
-
-            per_source_qids = {src: [] for src in args.sources}
-            for source_id, ex_info in unique_questions.items():
-                for src in args.sources:
-                    if src in ex_info["source"]:
-                        per_source_qids[src].append(source_id)
-
-            per_example_correct = {source_id: 0 for source_id in unique_questions}
-            all_records = []
-
-            prompts = []
-            metas = []
             for item in data_slice:
                 solve_user_content = SOLVE_PROMPT.format(
                     question=item["original_question"],
@@ -925,8 +738,9 @@ def worker_vllm(rank, args, rank_lang_data, return_dict, progress):
                     enable_thinking=False,
                 )
                 prompts.append(solve_prompt)
-                metas.append(item)
+                metas.append({"lang": lang, "item": item})
 
+        if prompts:
             outputs = llm.generate(
                 prompts,
                 sampling_params=sampling_params,
@@ -936,15 +750,14 @@ def worker_vllm(rank, args, rank_lang_data, return_dict, progress):
             for out, meta in zip(outputs, metas):
                 text = out.outputs[0].text.strip()
                 pred = last_number_from_text(text)
-                ans = meta["answer"]
+                ans = meta["item"]["answer"]
                 is_correct = int(pred == ans)
-                per_example_correct[meta["source"]] += is_correct
                 all_records.append(
                     {
-                        "language": lang,
-                        "source": meta["source"],
-                        "original_question": meta["original_question"],
-                        "translated_question": meta["translation"],
+                        "language": meta["lang"],
+                        "source": meta["item"]["source"],
+                        "original_question": meta["item"]["original_question"],
+                        "translated_question": meta["item"]["translation"],
                         "full_response": text,
                         "pred_number": pred if pred is not None else "",
                         "answer": ans if ans is not None else "",
@@ -952,30 +765,12 @@ def worker_vllm(rank, args, rank_lang_data, return_dict, progress):
                     }
                 )
 
-            k = num_samples
-            total_correct = sum(per_example_correct.values())
-            total_trials = N * k
-
-            source_stats = {}
-            for src in args.sources:
-                ids = per_source_qids[src]
-                if not ids:
-                    continue
-                correct_src = sum(per_example_correct[i] for i in ids)
-                total_src = len(ids) * k
-                source_stats[src] = {
-                    "num_questions": len(ids),
-                    "total_correct": correct_src,
-                    "total_trials": total_src,
-                }
-
-            worker_results[lang] = {
-                "num_questions": N,
-                "total_correct": total_correct,
-                "total_trials": total_trials,
-                "sources": source_stats,
-                "all_records": all_records,
-            }
+        # 按语言分组，只返回 all_records（与 worker_solve 对齐）
+        worker_results = {}
+        for lang in rank_lang_data.keys():
+            lang_records = [r for r in all_records if r["language"] == lang]
+            if lang_records:
+                worker_results[lang] = {"all_records": lang_records}
 
         return_dict[rank] = worker_results
     except Exception:
@@ -1035,50 +830,48 @@ def solve_with_vllm(args, all_lang_data, langs, model_name, output_dir):
     for p in processes:
         p.join()
 
-    # 汇总并保存
+    # 汇总并保存（与 main() 中的统计逻辑对齐）
     summary_rows = []
 
     for lang in langs:
-        total_correct = 0
-        total_trials = 0
         all_samples = []
-        source_agg = {src: {"correct": 0, "total": 0} for src in args.sources}
 
         for v in return_dict.values():
             if lang not in v:
                 continue
             res = v[lang]
-            total_correct += res["total_correct"]
-            total_trials += res["total_trials"]
             all_samples.extend(res["all_records"])
-            for src, sres in res["sources"].items():
-                source_agg[src]["correct"] += sres["total_correct"]
-                source_agg[src]["total"] += sres["total_trials"]
 
+        if not all_samples:
+            continue
+
+        # 直接从 all_samples 统计
+        total_trials = len(all_samples)
+        total_correct = sum(r["is_correct"] for r in all_samples)
+
+        # 按 source 分别统计
         for src in args.sources:
-            agg = source_agg[src]
-            if agg["total"] == 0:
+            src_samples = [r for r in all_samples if src in r["source"]]
+            if not src_samples:
                 continue
-            acc = agg["correct"] / agg["total"]
-            stderr = math.sqrt(acc * (1 - acc) / agg["total"])
+            src_total = len(src_samples)
+            src_correct = sum(r["is_correct"] for r in src_samples)
+            acc = src_correct / src_total
+            stderr = math.sqrt(acc * (1 - acc) / src_total)
             ci_radius = 1.96 * stderr
             summary_rows.append(
                 {
                     "language": lang,
                     "source": src,
-                    "total": agg["total"],
-                    "correct": agg["correct"],
+                    "total": src_total,
+                    "correct": src_correct,
                     "accuracy": round(acc, 4),
                     "ci_radius": round(ci_radius, 4),
                 }
             )
 
-        acc_total = total_correct / total_trials if total_trials else 0.0
-        stderr_total = (
-            math.sqrt(acc_total * (1 - acc_total) / total_trials)
-            if total_trials
-            else 0.0
-        )
+        acc_total = total_correct / total_trials
+        stderr_total = math.sqrt(acc_total * (1 - acc_total) / total_trials)
         ci_radius_total = 1.96 * stderr_total
         summary_rows.append(
             {

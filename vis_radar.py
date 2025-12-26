@@ -60,6 +60,30 @@ def get_en_baseline(root_dir):
 en_baseline = get_en_baseline(root_dir)
 
 # ----------------------
+# Helper: layer sorting key
+# ----------------------
+def layer_sort_key(name):
+    """Extract sort key for layer names: numbers first, then strings."""
+    if "_" not in name:
+        return (1, 0, name)
+    suffix = name.split("_", 1)[1]
+    try:
+        return (0, int(suffix), "")
+    except ValueError:
+        return (1, 0, suffix)
+
+def is_numeric_layer(name):
+    """Check if layer name has numeric suffix (e.g., layer_0, layer_18)."""
+    if "_" not in name:
+        return False
+    suffix = name.split("_", 1)[1]
+    return suffix.isdigit()
+
+def get_layer_num(name):
+    """Extract layer number from folder name (e.g., layer_0 -> 0)."""
+    return int(name.split("_", 1)[1])
+
+# ----------------------
 # Collect standard configurations
 # ----------------------
 print("\n" + "=" * 60)
@@ -148,8 +172,8 @@ def generate_individual_radar(config_name, lang_acc, output_path, is_mask=False)
         return False
     
     languages = sorted(lang_data.keys())
-    accuracies = [lang_data[l][0] for l in languages]
-    ci_radii = [lang_data[l][1] for l in languages]  # Use per-language CI for individual radar
+    accuracies = [lang_data[l][0] for l in languages]  # acc
+    ci_radii = [lang_data[l][1] for l in languages]    # ci
     
     N = len(languages)
     angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
@@ -281,15 +305,17 @@ if standard_data:
     
     for config in config_names:
         lang_acc = standard_data[config]
-        # Sum up total and correct across all non-English languages
-        total_sum = sum(lang_acc[lang][2] for lang in languages if lang in lang_acc)
-        correct_sum = sum(lang_acc[lang][3] for lang in languages if lang in lang_acc)
-        if total_sum > 0:
-            acc = correct_sum / total_sum
-            ci = 1.96 * np.sqrt(acc * (1 - acc) / total_sum)
+        valid_langs = [lang for lang in languages if lang in lang_acc]
+        if valid_langs:
+            # 汇总所有语言的样本数和正确数
+            total_sum = sum(lang_acc[lang][2] for lang in valid_langs)
+            correct_sum = sum(lang_acc[lang][3] for lang in valid_langs)
+            mean_acc = correct_sum / total_sum if total_sum > 0 else 0.0
+            # 置信区间：CI = 1.96 * sqrt(p * (1-p) / n)
+            ci = 1.96 * np.sqrt(mean_acc * (1 - mean_acc) / total_sum) if total_sum > 0 else 0.0
         else:
-            acc, ci = 0.0, 0.0
-        mean_accs.append(acc)
+            mean_acc, ci = 0.0, 0.0
+        mean_accs.append(mean_acc)
         mean_cis.append(ci)
     
     bars = ax.bar(range(len(config_names)), mean_accs, yerr=mean_cis, capsize=5,
@@ -377,23 +403,24 @@ if mask_data:
     # Mean accuracy bar chart
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Sort by layer number
-    sorted_items = sorted(mask_data.items(), 
-                         key=lambda x: int(x[0].split("_")[1]) if "_" in x[0] else 0)
+    # Sort by layer identifier (number first, then string)
+    sorted_items = sorted(mask_data.items(), key=lambda x: layer_sort_key(x[0]))
     folder_names = [f for f, _ in sorted_items]
     mean_accs = []
     mean_cis = []
     
     for folder, lang_acc in sorted_items:
-        # Sum up total and correct across all non-English languages
-        total_sum = sum(lang_acc[lang][2] for lang in languages if lang in lang_acc)
-        correct_sum = sum(lang_acc[lang][3] for lang in languages if lang in lang_acc)
-        if total_sum > 0:
-            acc = correct_sum / total_sum
-            ci = 1.96 * np.sqrt(acc * (1 - acc) / total_sum)
+        valid_langs = [lang for lang in languages if lang in lang_acc]
+        if valid_langs:
+            # 汇总所有语言的样本数和正确数
+            total_sum = sum(lang_acc[lang][2] for lang in valid_langs)
+            correct_sum = sum(lang_acc[lang][3] for lang in valid_langs)
+            mean_acc = correct_sum / total_sum if total_sum > 0 else 0.0
+            # 置信区间：CI = 1.96 * sqrt(p * (1-p) / n)
+            ci = 1.96 * np.sqrt(mean_acc * (1 - mean_acc) / total_sum) if total_sum > 0 else 0.0
         else:
-            acc, ci = 0.0, 0.0
-        mean_accs.append(acc)
+            mean_acc, ci = 0.0, 0.0
+        mean_accs.append(mean_acc)
         mean_cis.append(ci)
     
     bars = ax.bar(range(len(folder_names)), mean_accs, yerr=mean_cis, capsize=5,
@@ -421,6 +448,169 @@ if mask_data:
     plt.savefig(output_path, bbox_inches="tight", dpi=150)
     plt.close()
     print(f"    ✓ {output_path}")
+    
+    # ----------------------
+    # Per-language layer-wise accuracy line plots
+    # ----------------------
+    print("\n  📊 Per-language layer-wise accuracy plots...")
+    
+    # Filter only numeric layer folders, excluding layer_2
+    numeric_mask_data = {k: v for k, v in mask_data.items() 
+                         if is_numeric_layer(k) and get_layer_num(k) != 2}
+    
+    if numeric_mask_data:
+        # Sort by layer number
+        sorted_layers = sorted(numeric_mask_data.keys(), key=get_layer_num)
+        layer_nums = [get_layer_num(l) for l in sorted_layers]
+        
+        # Get all languages from numeric mask data
+        mask_languages = set()
+        for lang_acc in numeric_mask_data.values():
+            mask_languages.update(lang_acc.keys())
+        mask_languages.discard("en")
+        mask_languages = sorted(mask_languages)
+        
+        # ----------------------
+        # Plot 1: Mean accuracy line plot (Y: 0.4~0.6, no en baseline)
+        # ----------------------
+        mean_accs_by_layer = []
+        ci_by_layer = []
+        
+        for layer_folder in sorted_layers:
+            lang_acc = numeric_mask_data[layer_folder]
+            valid_langs = [l for l in mask_languages if l in lang_acc]
+            if valid_langs:
+                total_sum = sum(lang_acc[l][2] for l in valid_langs)
+                correct_sum = sum(lang_acc[l][3] for l in valid_langs)
+                mean_acc = correct_sum / total_sum if total_sum > 0 else 0.0
+                ci = 1.96 * np.sqrt(mean_acc * (1 - mean_acc) / total_sum) if total_sum > 0 else 0.0
+            else:
+                mean_acc, ci = 0.0, 0.0
+            mean_accs_by_layer.append(mean_acc)
+            ci_by_layer.append(ci)
+        
+        ci_lower = [max(a - c, 0.0) for a, c in zip(mean_accs_by_layer, ci_by_layer)]
+        ci_upper = [min(a + c, 1.0) for a, c in zip(mean_accs_by_layer, ci_by_layer)]
+        
+        # Convert to numpy arrays
+        x_arr = np.array(layer_nums)
+        y_arr = np.array(mean_accs_by_layer)
+        
+        # Plot mean accuracy line
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        ax.plot(layer_nums, mean_accs_by_layer, 'o-', linewidth=2, markersize=7,
+                color='steelblue', label='Mean accuracy (non-English)')
+        ax.fill_between(layer_nums, ci_lower, ci_upper,
+                       alpha=0.3, color='steelblue', label='95% CI')
+        
+        ax.set_xlabel("Layer (0 = shallowest)", fontsize=12)
+        ax.set_ylabel("Mean Accuracy (non-English)", fontsize=12)
+        ax.set_title("Layer-wise Mean Accuracy", fontsize=14, pad=15)
+        ax.set_ylim(0.425, 0.55)
+        ax.set_xticks(layer_nums)
+        ax.grid(True, linestyle='--', alpha=0.7)
+        ax.legend(loc='upper right', fontsize=10)
+        
+        plt.tight_layout()
+        output_path = os.path.join(mask_dir, "layer_accuracy_mean.png")
+        plt.savefig(output_path, bbox_inches="tight", dpi=150)
+        plt.close()
+        print(f"    ✓ {output_path}")
+        
+        # ----------------------
+        # Plot 1b: Slope/derivative plot to show acceleration
+        # ----------------------
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[2, 1], sharex=True)
+        
+        # Top: Accuracy
+        ax1.plot(layer_nums, mean_accs_by_layer, 'o-', linewidth=2, markersize=7,
+                color='steelblue', label='Mean accuracy')
+        ax1.fill_between(layer_nums, ci_lower, ci_upper,
+                        alpha=0.3, color='steelblue')
+        ax1.set_ylabel("Mean Accuracy", fontsize=12)
+        ax1.set_ylim(0.425, 0.55)
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        ax1.legend(loc='upper right', fontsize=10)
+        ax1.set_title("Layer-wise Accuracy and Rate of Change", fontsize=14, pad=10)
+        
+        # Bottom: Discrete derivative (slope between adjacent points)
+        slopes = np.diff(y_arr) / np.diff(x_arr)
+        x_mid = (x_arr[:-1] + x_arr[1:]) / 2  # midpoints
+        
+        ax2.plot(x_mid, slopes, 'o-', linewidth=2, markersize=5, color='darkgreen')
+        ax2.axhline(y=0, color='gray', linestyle='--', linewidth=1)
+        ax2.fill_between(x_mid, slopes, 0, where=(slopes < 0), 
+                        alpha=0.3, color='red', label='Decreasing')
+        ax2.set_xlabel("Layer (0 = shallowest)", fontsize=12)
+        ax2.set_ylabel("Rate of Change\n(Δ Acc / Δ Layer)", fontsize=11)
+        ax2.set_xticks(layer_nums)
+        ax2.grid(True, linestyle='--', alpha=0.7)
+        ax2.legend(loc='lower left', fontsize=9)
+        
+        plt.tight_layout()
+        output_path = os.path.join(mask_dir, "layer_accuracy_with_derivative.png")
+        plt.savefig(output_path, bbox_inches="tight", dpi=150)
+        plt.close()
+        print(f"    ✓ {output_path}")
+        
+        # ----------------------
+        # Plot 2: Normalized (min-max to 0~1) per-language lines + bold mean
+        # ----------------------
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        # Collect all language accuracies
+        all_lang_accs = {}  # lang -> list of accs
+        for lang in mask_languages:
+            accs = []
+            for layer_folder in sorted_layers:
+                lang_acc = numeric_mask_data[layer_folder]
+                if lang in lang_acc:
+                    acc, _, _, _ = lang_acc[lang]
+                    accs.append(acc)
+                else:
+                    accs.append(np.nan)
+            all_lang_accs[lang] = accs
+        
+        # Normalize each language's accuracy to 0~1 (min-max normalization)
+        normalized_accs = {}
+        for lang, accs in all_lang_accs.items():
+            accs_arr = np.array(accs)
+            valid_mask = ~np.isnan(accs_arr)
+            if valid_mask.sum() > 0:
+                min_val = np.nanmin(accs_arr)
+                max_val = np.nanmax(accs_arr)
+                if max_val > min_val:
+                    normalized = (accs_arr - min_val) / (max_val - min_val)
+                else:
+                    normalized = np.zeros_like(accs_arr)
+                normalized_accs[lang] = normalized
+            else:
+                normalized_accs[lang] = accs_arr
+        
+        # Plot each language with semi-transparency
+        for lang in mask_languages:
+            ax.plot(layer_nums, normalized_accs[lang], '-', linewidth=1, 
+                    alpha=0.3, color='steelblue')
+        
+        # Calculate and plot mean of normalized values
+        normalized_mean = np.nanmean([normalized_accs[lang] for lang in mask_languages], axis=0)
+        ax.plot(layer_nums, normalized_mean, 'o-', linewidth=3, markersize=6,
+                color='darkblue', label='Mean (normalized)')
+        
+        ax.set_xlabel("Layer (0 = shallowest)", fontsize=12)
+        ax.set_ylabel("Normalized Accuracy (0-1)", fontsize=12)
+        ax.set_title("Layer-wise Normalized Accuracy (Min-Max per Language)", fontsize=14, pad=15)
+        ax.set_ylim(0, 1)
+        ax.set_xticks(layer_nums)
+        ax.grid(True, linestyle='--', alpha=0.7)
+        ax.legend(loc='upper right', fontsize=10)
+        
+        plt.tight_layout()
+        output_path = os.path.join(mask_dir, "layer_accuracy_normalized.png")
+        plt.savefig(output_path, bbox_inches="tight", dpi=150)
+        plt.close()
+        print(f"    ✓ {output_path}")
 
 # ----------------------
 # 3. Unified comparison (standard + mask)
@@ -428,10 +618,11 @@ if mask_data:
 if standard_data or mask_data:
     print("\n  📊 Unified comparison (Standard + Mask)...")
     
-    # Combine all data
+    # Combine all data (mask configs sorted by layer)
     unified_data = {}
     unified_data.update(standard_data)
-    for folder, lang_acc in mask_data.items():
+    sorted_mask_items = sorted(mask_data.items(), key=lambda x: layer_sort_key(x[0]))
+    for folder, lang_acc in sorted_mask_items:
         display_name = f"mask_{folder.replace('layer_', 'L')}"
         unified_data[display_name] = lang_acc
     
@@ -499,15 +690,17 @@ if standard_data or mask_data:
     
     for config in config_names:
         lang_acc = unified_data[config]
-        # Sum up total and correct across all non-English languages
-        total_sum = sum(lang_acc[lang][2] for lang in languages if lang in lang_acc)
-        correct_sum = sum(lang_acc[lang][3] for lang in languages if lang in lang_acc)
-        if total_sum > 0:
-            acc = correct_sum / total_sum
-            ci = 1.96 * np.sqrt(acc * (1 - acc) / total_sum)
+        valid_langs = [lang for lang in languages if lang in lang_acc]
+        if valid_langs:
+            # 汇总所有语言的样本数和正确数
+            total_sum = sum(lang_acc[lang][2] for lang in valid_langs)
+            correct_sum = sum(lang_acc[lang][3] for lang in valid_langs)
+            mean_acc = correct_sum / total_sum if total_sum > 0 else 0.0
+            # 置信区间：CI = 1.96 * sqrt(p * (1-p) / n)
+            ci = 1.96 * np.sqrt(mean_acc * (1 - mean_acc) / total_sum) if total_sum > 0 else 0.0
         else:
-            acc, ci = 0.0, 0.0
-        mean_accs.append(acc)
+            mean_acc, ci = 0.0, 0.0
+        mean_accs.append(mean_acc)
         mean_cis.append(ci)
         bar_colors.append('coral' if config.startswith('mask_') else 'steelblue')
     
