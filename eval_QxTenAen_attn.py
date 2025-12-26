@@ -51,14 +51,9 @@ def build_chat_prompt(tokenizer, user_content):
 def worker_process(rank, args, rank_lang_data, return_dict, progress):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     torch.cuda.set_device(0)
-
+    is_debug = isinstance(progress, list)
     model_path = os.path.join(args.model_dir, args.model)
-    llm = LLM(model=model_path, dtype="half")
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-    )
+    
     # ============================================
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -78,74 +73,31 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
         trust_remote_code=True
     )
 
-    hf_model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float16,
-        device_map="cuda",
-        trust_remote_code=True,
-        attn_implementation="eager",  # 必须
-    ).eval()
-    
     hf_tokenizer.add_special_tokens(special_tokens)
-    hf_model.resize_token_embeddings(len(tokenizer))
     
-    del llm
-    torch.cuda.empty_cache()
-    return 
-    def find_marker_positions(tokenizer, full_text):
-        ids = tokenizer(
-            full_text,
-            add_special_tokens=False
-        )["input_ids"]
-
-        def find(marker):
-            marker_id = tokenizer(marker, add_special_tokens=False)["input_ids"]
-            for i in range(len(ids)):
-                if ids[i:i+len(marker_id)] == marker_id:
-                    return i + len(marker_id)
-            raise ValueError(f"Marker {marker} not found")
-
-        p = find(PROBLEM_MARK)
-        t = find(TRANSLATION_MARK)
-        g = find(GEN_MARK)
-
-        return {
-            "problem": (p, t),
-            "translation": (t, g),
-            "generation": (g, len(ids)),
-            "full_ids": ids,
-        }
-        
-    def compute_attention_batch(model, tokenizer, texts):
-        """
-        texts: List[str]
-        return: attn tensor (L, B, H, T, T)
-        """
-        inputs = tokenizer(
-            texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=False,
-            add_special_tokens=False,
-        ).to(model.device)
-
-        with torch.no_grad():
-            outputs = model(
-                **inputs,
-                output_attentions=True,
-                return_dict=True,
-                use_cache=False,
-            )
-
-        # outputs.attentions: tuple of (B, H, T, T)
-        attn = torch.stack(outputs.attentions)  # (L, B, H, T, T)
-
-        return attn, inputs["attention_mask"]
-
+    SOLVE_PROMPT_MARKED = (
+        f"{PROBLEM_MARK}\n"
+        "Problem: {question}\n\n"
+        f"{TRANSLATION_MARK}\n"
+        "Translation: {translation}\n\n"
+        f"{GEN_MARK}\n"
+        "Solve the above problem and enclose the final number at the end "
+        "of the response in $\\boxed{{}}$."
+    )
+    
     # ============================================
+    
+    llm = LLM(model=model_path, dtype="half")
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        trust_remote_code=True,
+    )
     
     worker_results = {}
 
+    # ====================== 生成阶段 ======================
+    all_generated_data = {}
     for lang, data_slice in rank_lang_data.items():
         if not data_slice:
             continue
@@ -214,13 +166,13 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
             ),
             use_tqdm=False,
         )
-
-        # ====================== Step 3: 计算 attn ======================
+        if is_debug:
+            print("processing on ", lang, "len", len(data_slice))
         def chunked(iterable, chunk_size):
             for i in range(0, len(iterable), chunk_size):
                 yield iterable[i:i + chunk_size]
                 
-        BATCH_SIZE = 2  # 5090 推荐 1–2
+        BATCH_SIZE = 1  # 减少以节省内存
             
         SOLVE_PROMPT_MARKED = (
             f"{PROBLEM_MARK}\n"
@@ -234,7 +186,6 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
         
         full_texts = []
         for ex_id, tq, out in zip(translate_meta, translated_questions, solve_outputs):
-            
             solve_user_content = SOLVE_PROMPT_MARKED.format(
                 question=data_slice[ex_id][question_field],
                 translation=tq
@@ -242,7 +193,98 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
             solve_prompt = build_chat_prompt(hf_tokenizer, solve_user_content)
             gen_text = out.outputs[0].text
             full_texts.append(solve_prompt + gen_text)
+
+        all_generated_data[lang] = {
+            'data_slice': data_slice,
+            'translated_questions': translated_questions,
+            'solve_outputs': solve_outputs,
+            'full_texts': full_texts,
+            'prompt_meta': prompt_meta,
+            'translate_meta': translate_meta,
+            'per_source_qids': per_source_qids,
+        }
+
+    # 删除 vLLM 以节省内存
+    del llm
+    del tokenizer
+    torch.cuda.empty_cache()
+
+    # 加载 HF model 用于注意力计算
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        dtype=torch.float16,
+        device_map="cuda",
+        trust_remote_code=True,
+        attn_implementation="eager",  # 必须
+    ).eval()
+    hf_model.resize_token_embeddings(len(hf_tokenizer))
+
+    # ====================== 注意力计算阶段 ======================
+    for lang, gen_data in all_generated_data.items():
+        data_slice = gen_data['data_slice']
+        translated_questions = gen_data['translated_questions']
+        solve_outputs = gen_data['solve_outputs']
+        full_texts = gen_data['full_texts']
+        prompt_meta = gen_data['prompt_meta']
+        translate_meta = gen_data['translate_meta']
+        per_source_qids = gen_data['per_source_qids']
+
+        # ====================== Step 3: 计算 attn ======================
+        def chunked(iterable, chunk_size):
+            for i in range(0, len(iterable), chunk_size):
+                yield iterable[i:i + chunk_size]
+                
+        BATCH_SIZE = 1  # 减少以节省内存
+                
+        def find_marker_positions(tokenizer, full_text):
+            ids = tokenizer(
+                full_text,
+                add_special_tokens=False
+            )["input_ids"]
+
+            def find(marker):
+                marker_id = tokenizer(marker, add_special_tokens=False)["input_ids"]
+                for i in range(len(ids)):
+                    if ids[i:i+len(marker_id)] == marker_id:
+                        return i + len(marker_id)
+                raise ValueError(f"Marker {marker} not found")
+
+            p = find(PROBLEM_MARK)
+            t = find(TRANSLATION_MARK)
+            g = find(GEN_MARK)
+
+            return {
+                "problem": (p, t),
+                "translation": (t, g),
+                "generation": (g, len(ids)),
+                "full_ids": (0, ids),
+            }
             
+        def compute_attention_batch(model, tokenizer, texts):
+            """
+            texts: List[str]
+            return: attn tensor (L, B, H, T, T)
+            """
+            inputs = tokenizer(
+                texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=False,
+                add_special_tokens=False,
+            ).to(model.device)
+
+            with torch.no_grad():
+                outputs = model(
+                    **inputs,
+                    output_attentions=True,
+                    return_dict=True,
+                    use_cache=False,
+                )
+
+            # outputs.attentions: tuple of (B, H, T, T)
+            attn = torch.stack(outputs.attentions)  # (L, B, H, T, T)
+
+            return attn, inputs["attention_mask"]
 
         def compute_region_attention_per_layer(
             attn,               # (L, B, H, T, T)
@@ -305,12 +347,15 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
             return results
         
         layerwise_results = []
+        iteration = 0
         for full_text_batch in chunked(full_texts, BATCH_SIZE):
             regions_list = [
                 find_marker_positions(hf_tokenizer, text)
                 for text in full_text_batch
             ]
-            
+            if is_debug:
+                print(f"computing attention batch {iteration}, batch size {len(full_text_batch)}")
+                iteration += 1
             attn, attention_mask = compute_attention_batch(
                 hf_model,
                 hf_tokenizer,
@@ -322,12 +367,16 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
                 regions_list
             )
             layerwise_results.extend(batch_layerwise)
-            
+            if is_debug:
+                print(f"attention batch computed: {batch_layerwise}")
 
         # ---------- 更新进度 ----------
         try:
-            with progress.get_lock():
-                progress.value += 1
+            if isinstance(progress, list):
+                progress[0] += 1
+            else:
+                with progress.get_lock():
+                    progress.value += 1
         except Exception:
             pass
 
@@ -404,7 +453,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
         }
 
     return_dict[rank] = worker_results
-    del llm
+    del hf_model
     torch.cuda.empty_cache()
 
 # ---------------------- main ----------------------
@@ -448,43 +497,53 @@ def main():
             ]
 
     # ---------- 多进程 ----------
-    manager = mp.Manager()
-    return_dict = manager.dict()
-    processes = []
-
-    total_batches = sum(
-        1
-        for lang in all_lang_data
-        for r in range(args.num_gpus)
-        if all_lang_data[lang][r]
-    )
-
-    progress = mp.Value('i', 0)
-
-    for rank in range(args.num_gpus):
-        rank_data = {lang: all_lang_data[lang][rank] for lang in all_lang_data}
-        p = mp.Process(
-            target=worker_process,
-            args=(rank, args, rank_data, return_dict, progress),
-        )
-        p.start()
-        processes.append(p)
-
-    if total_batches > 0:
+    if args.num_gpus == 1:
+        print("----- test mode on single GPU, no multiprocessing. ------")
+        return_dict = {}
+        progress = [0]
+        rank_data = {lang: all_lang_data[lang][0] for lang in all_lang_data}
+        worker_process(0, args, rank_data, return_dict, progress)
+        total_batches = 1
         with tqdm(total=total_batches, desc="generate batches") as pbar:
-            last = 0
-            while True:
-                with progress.get_lock():
-                    cur = progress.value
-                if cur > last:
-                    pbar.update(cur - last)
-                    last = cur
-                if cur >= total_batches:
-                    break
-                time.sleep(0.1)
+            pbar.update(1)
+    else:
+        manager = mp.Manager()
+        return_dict = manager.dict()
+        processes = []
 
-    for p in processes:
-        p.join()
+        total_batches = sum(
+            1
+            for lang in all_lang_data
+            for r in range(args.num_gpus)
+            if all_lang_data[lang][r]
+        )
+
+        progress = mp.Value('i', 0)
+
+        for rank in range(args.num_gpus):
+            rank_data = {lang: all_lang_data[lang][rank] for lang in all_lang_data}
+            p = mp.Process(
+                target=worker_process,
+                args=(rank, args, rank_data, return_dict, progress),
+            )
+            p.start()
+            processes.append(p)
+
+        if total_batches > 0:
+            with tqdm(total=total_batches, desc="generate batches") as pbar:
+                last = 0
+                while True:
+                    with progress.get_lock():
+                        cur = progress.value
+                    if cur > last:
+                        pbar.update(cur - last)
+                        last = cur
+                    if cur >= total_batches:
+                        break
+                    time.sleep(0.1)
+
+        for p in processes:
+            p.join()
 
     # ---------- 汇总 & 保存（保持你原逻辑） ----------
     summary_rows = []
