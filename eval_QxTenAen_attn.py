@@ -57,6 +57,8 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
     # ============================================
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
+    BATCH_SIZE = 1  # 减少以节省内存
+        
     PROBLEM_MARK = "<|problem|>"
     TRANSLATION_MARK = "<|translation|>"
     GEN_MARK = "<|gen|>"
@@ -95,7 +97,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
     )
     
     worker_results = {}
-
+    print(f"Worker {rank} processing languages: {list(rank_lang_data.keys())}")
     # ====================== 生成阶段 ======================
     all_generated_data = {}
     for lang, data_slice in rank_lang_data.items():
@@ -218,7 +220,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
         attn_implementation="eager",  # 必须
     ).eval()
     hf_model.resize_token_embeddings(len(hf_tokenizer))
-
+    print(f"Worker {rank} loaded HF model for attention computation.")
     # ====================== 注意力计算阶段 ======================
     for lang, gen_data in all_generated_data.items():
         data_slice = gen_data['data_slice']
@@ -228,13 +230,12 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
         prompt_meta = gen_data['prompt_meta']
         translate_meta = gen_data['translate_meta']
         per_source_qids = gen_data['per_source_qids']
-
+        print(f"Worker {rank} computing attention for language: {lang}, num examples: {len(data_slice)}")
         # ====================== Step 3: 计算 attn ======================
         def chunked(iterable, chunk_size):
             for i in range(0, len(iterable), chunk_size):
                 yield iterable[i:i + chunk_size]
                 
-        BATCH_SIZE = 1  # 减少以节省内存
                 
         def find_marker_positions(tokenizer, full_text):
             ids = tokenizer(
@@ -344,7 +345,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
 
                 results.append(per_layer_stats)
 
-            return results
+            return results # shape (B, L, dict)
         
         layerwise_results = []
         iteration = 0
@@ -355,7 +356,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
             ]
             if is_debug:
                 print(f"computing attention batch {iteration}, batch size {len(full_text_batch)}")
-                iteration += 1
+            iteration += 1
             attn, attention_mask = compute_attention_batch(
                 hf_model,
                 hf_tokenizer,
@@ -367,8 +368,11 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
                 regions_list
             )
             layerwise_results.extend(batch_layerwise)
+            if iteration % 10 == 0 or iteration == math.ceil(len(full_texts) / BATCH_SIZE):
+                print(f"Worker {rank} attention batches computed: {iteration}/{math.ceil(len(full_texts) / BATCH_SIZE)}")
             if is_debug:
                 print(f"attention batch computed: {batch_layerwise}")
+            
 
         # ---------- 更新进度 ----------
         try:
@@ -398,11 +402,12 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
 
             is_correct = (pred == ans)
             per_example_correct[ex_id] += int(is_correct)
-            
+            if is_debug:
+                print(aggregated[ex_id], lay_attn)
             for l in range(L):
-                for k in aggregated[ex_id]:
-                    aggregated[ex_id][k] += lay_attn[l][k]
-            
+                for k, _ in aggregated[ex_id][l].items():
+                        aggregated[ex_id][l][k] += lay_attn[l][k]
+
             record = {
                 "language": lang,
                 "source": ex["source"],
@@ -434,7 +439,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
             
             for i in ids:
                 for l in range(L):
-                    for key in aggregated_src[l]:
+                    for key, _ in aggregated_src[l].items():
                         aggregated_src[l][key] += aggregated[i][l][key]
             
             source_stats[src] = {
@@ -570,7 +575,7 @@ def main():
                     source_agg[src]["attention_dist"] = sres["attention_dist"]
                 else:
                     for l in range(len(sres["attention_dist"])):
-                        for key in sres["attention_dist"][l]:
+                        for key, _ in sres["attention_dist"][l].items():
                             source_agg[src]["attention_dist"][l][key] += sres["attention_dist"][l][key]
 
         attn_total = None
@@ -589,13 +594,17 @@ def main():
                 "correct": agg["correct"],
                 "accuracy": round(acc, 4),
                 "ci_radius": round(ci_radius, 4),
-                "attention_dist": agg["attention_dist"] / agg["total"] if agg["total"] else None,
+                "attention_dist": [
+                    {region: value / agg["total"] 
+                    for region, value in layer.items()} 
+                    for layer in agg["attention_dist"]
+                ] if agg["total"] else None,
             })
             if attn_total is None:
                 attn_total = agg["attention_dist"]
             else:
                 for l in range(len(agg["attention_dist"])):
-                    for key in agg["attention_dist"][l]:
+                    for key, _ in agg["attention_dist"][l].items():
                         attn_total[l][key] += agg["attention_dist"][l][key]
 
         acc_total = total_correct / total_trials if total_trials else 0.0
@@ -609,7 +618,11 @@ def main():
             "correct": total_correct,
             "accuracy": round(acc_total, 4),
             "ci_radius": round(ci_radius_total, 4),
-            "attention_dist": attn_total / total_trials if total_trials else None,
+            "attention_dist": [
+                    {region: value / total_trials 
+                    for region, value in layer.items()} 
+                    for layer in attn_total
+                ] if total_trials else None,
         })
 
         if all_samples:
