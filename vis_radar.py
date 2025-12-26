@@ -83,7 +83,9 @@ for config in standard_configs:
         lang = row["language"]
         acc = row["accuracy"]
         ci = row["ci_radius"]
-        lang_acc[lang] = (acc, ci)
+        total = row["total"]
+        correct = row["correct"]
+        lang_acc[lang] = (acc, ci, total, correct)
         if lang != "en":
             all_languages.add(lang)
 
@@ -120,7 +122,9 @@ if os.path.exists(mask_dir):
             lang = row["language"]
             acc = row["accuracy"]
             ci = row["ci_radius"]
-            lang_acc[lang] = (acc, ci)
+            total = row["total"]
+            correct = row["correct"]
+            lang_acc[lang] = (acc, ci, total, correct)
             if lang != "en":
                 all_languages.add(lang)
 
@@ -145,7 +149,7 @@ def generate_individual_radar(config_name, lang_acc, output_path, is_mask=False)
     
     languages = sorted(lang_data.keys())
     accuracies = [lang_data[l][0] for l in languages]
-    ci_radii = [lang_data[l][1] for l in languages]
+    ci_radii = [lang_data[l][1] for l in languages]  # Use per-language CI for individual radar
     
     N = len(languages)
     angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
@@ -227,7 +231,7 @@ if standard_data:
         
         for lang in languages:
             if lang in lang_acc:
-                acc, ci = lang_acc[lang]
+                acc, ci, _, _ = lang_acc[lang]
                 values.append(acc)
                 ci_upper.append(min(acc + ci, 1.0))
                 ci_lower.append(max(acc - ci, 0.0))
@@ -277,10 +281,16 @@ if standard_data:
     
     for config in config_names:
         lang_acc = standard_data[config]
-        accs = [lang_acc[lang][0] for lang in languages if lang in lang_acc]
-        cis = [lang_acc[lang][1] for lang in languages if lang in lang_acc]
-        mean_accs.append(np.mean(accs) if accs else 0.0)
-        mean_cis.append(max(cis) if cis else 0.0)
+        # Sum up total and correct across all non-English languages
+        total_sum = sum(lang_acc[lang][2] for lang in languages if lang in lang_acc)
+        correct_sum = sum(lang_acc[lang][3] for lang in languages if lang in lang_acc)
+        if total_sum > 0:
+            acc = correct_sum / total_sum
+            ci = 1.96 * np.sqrt(acc * (1 - acc) / total_sum)
+        else:
+            acc, ci = 0.0, 0.0
+        mean_accs.append(acc)
+        mean_cis.append(ci)
     
     bars = ax.bar(range(len(config_names)), mean_accs, yerr=mean_cis, capsize=5,
                    color='steelblue', alpha=0.7, edgecolor='black')
@@ -324,7 +334,7 @@ if mask_data:
         
         for lang in languages:
             if lang in lang_acc:
-                acc, ci = lang_acc[lang]
+                acc, ci, _, _ = lang_acc[lang]
                 values.append(acc)
                 ci_upper.append(min(acc + ci, 1.0))
                 ci_lower.append(max(acc - ci, 0.0))
@@ -375,10 +385,16 @@ if mask_data:
     mean_cis = []
     
     for folder, lang_acc in sorted_items:
-        accs = [lang_acc[lang][0] for lang in languages if lang in lang_acc]
-        cis = [lang_acc[lang][1] for lang in languages if lang in lang_acc]
-        mean_accs.append(np.mean(accs) if accs else 0.0)
-        mean_cis.append(max(cis) if cis else 0.0)
+        # Sum up total and correct across all non-English languages
+        total_sum = sum(lang_acc[lang][2] for lang in languages if lang in lang_acc)
+        correct_sum = sum(lang_acc[lang][3] for lang in languages if lang in lang_acc)
+        if total_sum > 0:
+            acc = correct_sum / total_sum
+            ci = 1.96 * np.sqrt(acc * (1 - acc) / total_sum)
+        else:
+            acc, ci = 0.0, 0.0
+        mean_accs.append(acc)
+        mean_cis.append(ci)
     
     bars = ax.bar(range(len(folder_names)), mean_accs, yerr=mean_cis, capsize=5,
                    color='coral', alpha=0.7, edgecolor='black')
@@ -430,7 +446,7 @@ if standard_data or mask_data:
         
         for lang in languages:
             if lang in lang_acc:
-                acc, ci = lang_acc[lang]
+                acc, ci, _, _ = lang_acc[lang]
                 values.append(acc)
                 ci_upper.append(min(acc + ci, 1.0))
                 ci_lower.append(max(acc - ci, 0.0))
@@ -483,10 +499,16 @@ if standard_data or mask_data:
     
     for config in config_names:
         lang_acc = unified_data[config]
-        accs = [lang_acc[lang][0] for lang in languages if lang in lang_acc]
-        cis = [lang_acc[lang][1] for lang in languages if lang in lang_acc]
-        mean_accs.append(np.mean(accs) if accs else 0.0)
-        mean_cis.append(max(cis) if cis else 0.0)
+        # Sum up total and correct across all non-English languages
+        total_sum = sum(lang_acc[lang][2] for lang in languages if lang in lang_acc)
+        correct_sum = sum(lang_acc[lang][3] for lang in languages if lang in lang_acc)
+        if total_sum > 0:
+            acc = correct_sum / total_sum
+            ci = 1.96 * np.sqrt(acc * (1 - acc) / total_sum)
+        else:
+            acc, ci = 0.0, 0.0
+        mean_accs.append(acc)
+        mean_cis.append(ci)
         bar_colors.append('coral' if config.startswith('mask_') else 'steelblue')
     
     bars = ax.bar(range(len(config_names)), mean_accs, yerr=mean_cis, capsize=5,

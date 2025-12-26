@@ -20,7 +20,7 @@ from utils import last_number_from_text
 SOLVE_PROMPT = (
     "Problem: {question}\n\n"
     "Translation: {translation}\n\n"
-    "Solve the above problem and enclose the final number at the end of the response in $\\boxed{{}}$."
+    "Solve the above problem in English and enclose the final number at the end of the response in $\\boxed{{}}$."
 )
 
 
