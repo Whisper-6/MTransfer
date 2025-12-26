@@ -25,3 +25,15 @@ def last_number_from_text(text):
     except Exception:
         int_num = None
     return int_num
+
+def build_chat_prompt(tokenizer, user_content):
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": user_content},
+    ]
+    return tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )

@@ -57,7 +57,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
     # ============================================
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
-    BATCH_SIZE = 3  # 减少以节省内存
+    BATCH_SIZE = 2  # 减少以节省内存
         
     PROBLEM_MARK = "<|problem|>"
     TRANSLATION_MARK = "<|translation|>"
@@ -217,7 +217,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
     # 加载 HF model 用于注意力计算
     hf_model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        dtype=torch.float16,
+        dtype=torch.float32,
         device_map="cuda",
         trust_remote_code=True,
         attn_implementation="eager",  # 必须
@@ -348,6 +348,16 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
 
             return results # shape (B, L, dict)
         
+        def topk_mass(attn, k=5):
+            return attn.topk(k, dim=-1).values.sum(dim=-1).mean()
+        
+        def entropy(attn):
+            p = attn.clamp_min(1e-9)
+            return -(p * p.log()).sum(dim=-1).mean()
+        
+        def layer_param_norm(layer):
+            return sum(p.data.norm().item() for p in layer.parameters())
+        
         layerwise_results = []
         iteration = 0
         for full_text_batch in chunked(full_texts, BATCH_SIZE):
@@ -363,6 +373,14 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
                 hf_tokenizer,
                 full_text_batch
             )
+            if is_debug:
+                print("------ topk entropy $ topk mass & layer norms!!! --------")
+                print(topk_mass(attn[0, 0].mean(dim=0)), topk_mass(attn[-1, 0].mean(dim=0))) # shallow < deep
+                print(entropy(attn[0, 0].mean(dim=0)), entropy(attn[-1, 0].mean(dim=0))) # shallow > deep
+                layers = hf_model.model.layers
+                print(layer_param_norm(layers[0]), layer_param_norm(layers[-1])) # shallow < deep
+                # seems something make the layers reverse 
+                
             batch_layerwise = compute_region_attention_per_layer(
                 attn,
                 attention_mask,
@@ -379,6 +397,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
                 print(f"Mem allocated: {torch.cuda.memory_allocated()/1e9:.2f}GB, reserved: {torch.cuda.memory_reserved()/1e9:.2f}GB")
             
 
+    
         # ---------- 更新进度 ----------
         try:
             if isinstance(progress, list):
