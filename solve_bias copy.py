@@ -66,114 +66,163 @@ def build_block_bias(translation_ranges: torch.Tensor, kv_len: int, device, dtyp
 class LayerwiseMaskController:
     """
     在前 num_mask_layers 个自注意力层注册 forward_pre_hook，
-    为 attention_mask 添加加性 bias，阻止翻译区间后的 token 关注翻译区间内的 token。
+    为它们的 attention_mask 添加加性 bias，实现浅层不看翻译。
     """
 
-    def __init__(self, num_mask_layers: int, translation_ranges, device, debug: bool = False):
+    def __init__(self, num_mask_layers: int, translation_ranges, device):
         self.num_mask_layers = num_mask_layers
         self.translation_ranges = torch.as_tensor(translation_ranges, device=device)
-        self.debug = debug
-        self._debug_count = 0
+        self.cache = {}  # kv_len -> bias tensor
+        self._debug_once = True
 
-    def _get_past_len(self, past_key_value) -> int:
-        """从 past_key_value 中提取已缓存的序列长度"""
-        if past_key_value is None:
-            return 0
-        # 新版 transformers 使用 DynamicCache 对象
-        if hasattr(past_key_value, "get_seq_length"):
-            return past_key_value.get_seq_length()
-        # 旧版 tuple 格式
-        if isinstance(past_key_value, (list, tuple)) and len(past_key_value) > 0:
-            first = past_key_value[0]
-            if first is not None and hasattr(first, "shape"):
-                return first.shape[-2]
-        return 0
-
-    def _build_translation_bias(self, bsz: int, q_len: int, kv_len: int, past_len: int, device, dtype):
-        """
-        构造 translation mask bias: 阻止翻译区间后的 query 关注翻译区间内的 key。
-        返回 shape: [B, 1, q_len, kv_len]
-        """
-        start = self.translation_ranges[:, 0].view(-1, 1, 1)  # [B, 1, 1]
-        end = self.translation_ranges[:, 1].view(-1, 1, 1)    # [B, 1, 1]
-
-        q_offset = past_len if past_len > 0 else (kv_len - q_len)
-        q_pos = torch.arange(q_offset, q_offset + q_len, device=device).view(1, q_len, 1)
-        k_pos = torch.arange(kv_len, device=device).view(1, 1, kv_len)
-
-        # mask[b, q, k] = True 表示该位置需要被屏蔽
-        mask = (q_pos >= end) & (k_pos >= start) & (k_pos < end)  # [B, q, kv]
-
-        bias = torch.where(
-            mask.unsqueeze(1),  # [B, 1, q, kv]
-            torch.tensor(torch.finfo(dtype).min, device=device, dtype=dtype),
-            torch.tensor(0.0, device=device, dtype=dtype),
-        )
+    def _bias_for(self, kv_len: int, device, dtype):
+        bias = self.cache.get(kv_len)
+        if bias is None:
+            bias = build_block_bias(self.translation_ranges, kv_len, device, dtype)
+            self.cache[kv_len] = bias
         return bias
 
     def hook(self, module, inputs, kwargs):
-        """Forward pre-hook: 注入 translation bias 到 attention_mask"""
-        hidden_states = inputs[0] if inputs else kwargs.get("hidden_states")
-        if hidden_states is None:
-            return None
-
-        bsz, q_len, _ = hidden_states.shape
-        device, dtype = hidden_states.device, hidden_states.dtype
-
-        attn_mask = kwargs.get("attention_mask")  # [B, 1, q, kv] bfloat16
-        past_len = self._get_past_len(kwargs.get("past_key_value"))
-        kv_len = (past_len + q_len) if past_len > 0 else (attn_mask.size(-1) if attn_mask is not None else q_len)
-
-        # 构造 translation bias [B, 1, q, kv]
-        bias = self._build_translation_bias(bsz, q_len, kv_len, past_len, device, dtype)
-
-        # # 调试：打印 mask 信息
-        # if self._debug_count >= 0:
-        #     start_vals = self.translation_ranges[:, 0].tolist()
-        #     end_vals = self.translation_ranges[:, 1].tolist()
-        #     # 统计 mask 中有多少位置被屏蔽
-        #     mask_count = (bias < -1e30).sum().item()
-        #     total_count = bias.numel()
-        #     print(f"[Mask Debug] past_len={past_len}, q_len={q_len}, kv_len={kv_len},dtype ={dtype}")
-        #     print(f"  translation_ranges: start={start_vals}, end={end_vals}")
-        #     print(f"  bias: shape={tuple(bias.shape)}, masked={mask_count}/{total_count}")
-        #     if attn_mask is not None:
-        #         print(f"  attn_mask: shape={tuple(attn_mask.shape)}, dtype={attn_mask.dtype}")
-        #     else:
-        #         print(f"  attn_mask: None")
-        #     self._debug_count += 1
-
-        # 合并 mask（始终保留原始 attn_mask 中的 padding 信息）
-        if attn_mask is None:
-            kwargs["attention_mask"] = bias.contiguous()
+        # 兼容不同调用方式：hidden_states 可能在 args 也可能在 kwargs
+        if len(inputs) >= 1:
+            hidden_states = inputs[0]
         else:
-            # 如果 attn_mask 是 bool 类型，需要转换成加性 mask
-            # bool mask: True = 可以 attend, False = 不能 attend
-            # 加性 mask: 0 = 可以 attend, -inf = 不能 attend
-            if attn_mask.dtype == torch.bool:
-                min_val = torch.finfo(dtype).min
-                attn_mask_additive = torch.where(attn_mask, 0.0, min_val).to(dtype)
+            hidden_states = kwargs.get("hidden_states", None)
+        if hidden_states is None:
+            return None  # 无法获取输入，跳过
+
+        bsz, q_len, _ = hidden_states.size()
+        attn_mask = kwargs.get("attention_mask", None)
+        kv_len = attn_mask.size(-1) if attn_mask is not None else q_len
+
+        # 目标 head 数：优先取模块属性，否则取 config
+        head_dim = (
+            getattr(module, "num_heads", None)
+            or getattr(getattr(module, "config", None), "num_attention_heads", None)
+            or 1
+        )
+
+        # 直接按当前 q_len/kv_len 生成 bias_q，避免缓存大矩阵
+        start = self.translation_ranges[:, 0].view(-1, 1, 1)  # [B,1,1]
+        end = self.translation_ranges[:, 1].view(-1, 1, 1)    # [B,1,1]
+        q_pos = torch.arange(kv_len - q_len, kv_len, device=hidden_states.device, dtype=start.dtype).view(1, q_len, 1)
+        k_pos = torch.arange(kv_len, device=hidden_states.device, dtype=start.dtype).view(1, 1, kv_len)
+        mask = (q_pos >= end) & (k_pos >= start) & (k_pos < end)  # [B, q, kv]
+        
+        # 统一使用 float32 以保证 mask 的数值稳定性，避免 bfloat16/float16 下的精度问题
+        dtype = torch.float32
+        # float32 下可以使用更激进的负数，确保 softmax 后为 0
+        min_val = -1e9
+
+        # 构造 bias [B, 1, q, kv]
+        bias_q = torch.zeros(
+            (bsz, 1, q_len, kv_len),
+            device=hidden_states.device,
+            dtype=dtype,
+        ).masked_fill(mask.unsqueeze(1), min_val)
+
+        # 确保 bias_q 最后一维连续，且 shape 匹配 head_dim
+        # 为了兼容性，我们直接 expand 到完整 shape [B, head_dim, q, kv] 再 contiguous
+        bias_q = bias_q.expand(-1, head_dim, -1, -1).contiguous()
+
+        # [Debug] 每次都打印，查看 dtype/shape
+        # try:
+        #     # 仅打印 layer 0 的信息避免刷屏太快，或者你可以选择全部打印
+        #     # 这里简单判断一下 hidden_states 大小是否变了，或者直接打印
+        #     layer_idx = getattr(self, "debug_layer_count", 0)
+            
+        #     # 增加 decode 阶段的显式捕获
+        #     if q_len == 1 and layer_idx < 1: # 只打印 decode 阶段第一层的一次
+        #          print(f"[MaskDebug][Decode] layer_{layer_idx} q_len=1 bias_q: {bias_q.shape} {bias_q.dtype}")
+        #          if attn_mask is not None:
+        #              print(f"[MaskDebug][Decode] layer_{layer_idx} attn_mask: {attn_mask.shape} {attn_mask.dtype}")
+        #          else:
+        #              print(f"[MaskDebug][Decode] layer_{layer_idx} attn_mask is None")
+            
+        #     # 为了不刷屏太狠，我们只打印前 3 层的信息 (Prefill)
+        #     elif layer_idx < 3: 
+        #          print(f"[MaskDebug][Prefill] layer_{layer_idx} bias_q: {bias_q.shape} {bias_q.dtype}")
+        #          if attn_mask is not None:
+        #              print(f"[MaskDebug] layer_{layer_idx} attn_mask: {attn_mask.shape} {attn_mask.dtype}")
+        #          else:
+        #              print(f"[MaskDebug] layer_{layer_idx} attn_mask is None")
+            
+        #     # 每个 batch 重置计数器需要在外面控制，这里只是简单自增
+        #     # 实际上 hook 是每层调用的，所以 layer_idx 会一直增到 num_layers-1
+        #     # 当新的 forward (new token) 来时，我们需要某种方式重置 layer_idx
+        #     # 简单做法：利用 q_len 变化或者 kv_len 变化来感知，或者就让它这么流下去，只看最前面的 log
+        #     if layer_idx >= self.num_mask_layers - 1:
+        #         self.debug_layer_count = 0 # 简易重置，假设下一轮从 layer 0 开始
+        #     else:
+        #         self.debug_layer_count = layer_idx + 1
+        # except Exception:
+        #     pass
+
+        if attn_mask is None:
+            # 如果没有传入 attention_mask，直接使用我们的 bias
+            kwargs["attention_mask"] = bias_q
+        else:
+            # 如果有传入 attention_mask，需要将其广播到 [B, head_dim, q, kv] 并转为相同 dtype
+            # 注意：某些模型传入的 attn_mask 可能是 4D [B, 1, q, kv] 或者是 2D [B, kv]
+            
+            # 1. 维度扩展
+            if attn_mask.dim() == 2: # [B, kv]
+                attn_mask_exp = attn_mask[:, None, None, :]
+            elif attn_mask.dim() == 3: # [B, q, kv]
+                attn_mask_exp = attn_mask[:, None, :, :]
+            elif attn_mask.dim() == 4: # [B, 1/H, q, kv]
+                attn_mask_exp = attn_mask
             else:
-                attn_mask_additive = attn_mask.to(dtype)
-            kwargs["attention_mask"] = (attn_mask_additive + bias).contiguous()
+                return None # 未知格式，放弃注入
 
-        # 调试输出（仅在启用时打印前几次）
-        if self.debug and self._debug_count < 6:
-            self._log_debug(q_len, kv_len, hidden_states, attn_mask, bias, kwargs["attention_mask"])
-            self._debug_count += 1
+            try:
+                if layer_idx < 3:
+                    print(f"[MaskDebug] layer_{layer_idx} attn_mask_exp (pre-cast): {attn_mask_exp.dtype}")
+            except:
+                pass
 
+            # 2. 类型转换 (确保是加性 mask 而不是 bool)
+            if attn_mask_exp.dtype == torch.bool:
+                # bool 转 float: False -> 0, True -> min_val (注意 pytorch 定义通常 True 是 mask 掉)
+                # 但 transformers 通常: 0保留, 1 mask (对 bool) 或者 0保留, -inf mask (对 float)
+                # 安全起见，假设输入已经是 float (causal mask 通常是 float)
+                # 如果是 bool: ~mask * min_val ? 
+                # 大多数 causal LM 的 attention_mask 传入的是 float (0.0 或 -inf)
+                # 这里我们假设它已经是 float，或者强转
+                attn_mask_exp = attn_mask_exp.to(dtype)
+                # 如果转完全是 0/1，可能需要处理，但一般 causal mask 已经是 -inf/0
+            else:
+                attn_mask_exp = attn_mask_exp.to(dtype)
+
+            # 3. 广播到 [B, head_dim, q, kv]
+            if attn_mask_exp.size(1) != head_dim:
+                attn_mask_exp = attn_mask_exp.expand(-1, head_dim, -1, -1)
+            
+            # 4. 合并 & 确保连续
+            # 这一步非常关键：(A + B) 产生的新 tensor 不一定满足 SDPA 的 contiguous 要求
+            # 必须显式调用 .contiguous()
+            combined_mask = (attn_mask_exp + bias_q).contiguous()
+            kwargs["attention_mask"] = combined_mask
+
+
+        # try:
+        #     print(
+        #         "[MaskDebug] device",
+        #         torch.cuda.current_device() if torch.cuda.is_available() else "cpu",
+        #         "hs",
+        #         tuple(hidden_states.shape),
+        #         "attn_mask",
+        #         attn_mask.shape if attn_mask is not None else None,
+        #         "attn_mask_exp",
+        #         attn_mask_exp.shape if attn_mask is not None else None,
+        #         "bias_q",
+        #         tuple(bias_q.shape),
+        #         "head_dim",
+        #         head_dim,
+        #     )
+        # except Exception:
+        #     pass
         return None
-
-    def _log_debug(self, q_len, kv_len, hidden_states, attn_mask, bias, final_mask):
-        """输出调试信息"""
-        def info(t):
-            return f"shape={tuple(t.shape)}, dtype={t.dtype}, contig={t.is_contiguous()}"
-        print(f"[MaskDebug] q_len={q_len}, kv_len={kv_len}")
-        print(f"  hidden_states: {info(hidden_states)}")
-        if attn_mask is not None:
-            print(f"  attn_mask_raw: {info(attn_mask)}")
-        print(f"  bias: {info(bias)}")
-        print(f"  final_mask: {info(final_mask)}")
 
     @contextlib.contextmanager
     def register_hooks(self, model):
@@ -210,15 +259,27 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
     model_path = os.path.join(args.model_dir, args.model)
     print(f"[Rank {rank}] Loading model from {model_path}...")
 
-    # 统一使用 SDPA，mask_layers>0 时通过 sdp_kernel 强制 math 后端
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype="auto",
-        device_map="auto",
-        trust_remote_code=True,
-        attn_implementation="sdpa",
-    )
-    print(f"[Rank {rank}] Using SDPA attention")
+    # 优先 FlashAttention2
+    try:
+        # 尝试使用 FlashAttention2，但如果 mask 报错太难搞，可以考虑设为 "eager" 或 "sdpa" (默认)
+        # 这里为了避开 strict contiguous 报错，先尝试去掉显式指定，让它自动选择或回退
+        # 如果依然报错，可以将 attn_implementation 设为 "eager"
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype="auto",
+            device_map="auto",
+            trust_remote_code=True,
+            # attn_implementation="eager", 
+        )
+        print(f"[Rank {rank}] Using Auto Attention Implementation")
+    except Exception as e:
+        print(f"[Rank {rank}] Auto loading failed ({e}), fallback to auto")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype="auto",
+            device_map="auto",
+            trust_remote_code=True,
+        )
 
     model.eval()
 
@@ -297,11 +358,6 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
                     solve_prompt,
                     add_special_tokens=False,
                     return_offsets_mapping=True,
-                # 使用 offset_mapping 精确定位翻译区间，避免 tokenizer 在边界处合并 token 导致 off-by-one
-                enc = tokenizer(
-                    solve_prompt,
-                    add_special_tokens=False,
-                    return_offsets_mapping=True,
                 )
                 input_ids = enc["input_ids"]
                 offsets = enc.get("offset_mapping", None)
@@ -339,66 +395,6 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
                         translation_end_idx = len(pre_solve_ids)
                     else:
                         translation_end_idx = len(input_ids)
-                input_ids = enc["input_ids"]
-                offsets = enc.get("offset_mapping", None)
-
-                solve_part_start = solve_prompt.find(
-                    "\n\nSolve the above problem"
-                )
-                if offsets:
-                    # 起点包含 "Translation:" 标签本身
-                    start_char = solve_prompt.index("Translation:")
-                    end_char = (
-                        solve_part_start
-                        if solve_part_start > 0
-                        else len(solve_prompt)
-                    )
-                    translation_start_idx = next(
-                        i for i, (s, e) in enumerate(offsets) if e > start_char
-                    )
-                    translation_end_idx = (
-                        max(i for i, (s, e) in enumerate(offsets) if s < end_char)
-                        + 1
-                    )
-                else:
-                    # 退回旧逻辑（不依赖 offset_mapping）
-                    problem_part = solve_prompt.split("Translation:")[0]
-                    problem_ids = tokenizer.encode(
-                        problem_part, add_special_tokens=False
-                    )
-                    translation_start_idx = len(problem_ids)
-                    if solve_part_start > 0:
-                        pre_solve = solve_prompt[:solve_part_start]
-                        pre_solve_ids = tokenizer.encode(
-                            pre_solve, add_special_tokens=False
-                        )
-                        translation_end_idx = len(pre_solve_ids)
-                    else:
-                        translation_end_idx = len(input_ids)
-
-                # 仅首条样例打印翻译区间及上下文，检查是否误遮题干
-                if getattr(args, "debug_mask_span", False) and batch_idx == 0 and len(raw_input_ids) == 0:
-                    # question_tail 去掉 "Translation:" 标签，方便观察题干末尾
-                    if offsets:
-                        label_char = solve_prompt.index("Translation:")
-                        label_tok = next(i for i, (s, e) in enumerate(offsets) if e > label_char)
-                        before_tail = tokenizer.decode(
-                            input_ids[:label_tok]
-                        )
-                    else:
-                        before_tail = tokenizer.decode(
-                            input_ids[:translation_start_idx]
-                        )
-
-                    span = tokenizer.decode(
-                        input_ids[translation_start_idx:translation_end_idx]
-                    )
-                    after_head = tokenizer.decode(
-                        input_ids[translation_end_idx:translation_end_idx + 120]
-                    )[:120]
-                    print(f"[Debug][Rank {rank}] translation span: {span[:200]}...")
-                    print(f"[Debug][Rank {rank}] before span tail: {before_tail}")
-                    print(f"[Debug][Rank {rank}] after span head: {after_head}")
 
                 # 仅首条样例打印翻译区间及上下文，检查是否误遮题干
                 if getattr(args, "debug_mask_span", False) and batch_idx == 0 and len(raw_input_ids) == 0:
@@ -458,39 +454,30 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
                         f"[Debug][Rank {rank}] adjusted range: {(start + pad_len, end + pad_len)}, "
                         f"padded_len: {len(padded_ids)}"
                     )
-                if getattr(args, "debug_mask_span", False) and batch_idx == 0:
-                    print(
-                        f"[Debug][Rank {rank}] adjusted range: {(start + pad_len, end + pad_len)}, "
-                        f"padded_len: {len(padded_ids)}"
-                    )
 
             input_tensor = torch.stack(padded_input_ids).to(device)
+            # Fix for mask_layers=0 drop:
+            # When using left padding with model.generate(), we must provide a correct attention_mask.
+            # Otherwise, the model might attend to pad tokens or misalign position embeddings.
             attention_mask = (input_tensor != tokenizer.pad_token_id).long()
 
-            # 生成（统一使用 SDPA math 后端，保证 mask_layers=0 和 >0 行为一致）
+            # 生成
             try:
-                from torch.backends.cuda import sdp_kernel
-                with torch.inference_mode(), sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
-                    if args.num_mask_layers > 0:
-                        mask_controller = LayerwiseMaskController(
-                            num_mask_layers=args.num_mask_layers,
-                            translation_ranges=adjusted_ranges,
-                            device=device,
-                        )
-                        with mask_controller.register_hooks(model):
-                            outputs = model.generate(
-                                input_tensor,
-                                attention_mask=attention_mask,
-                                max_new_tokens=args.max_tokens,
-                                temperature=args.solve_temperature,
-                                do_sample=(args.solve_temperature > 0),
-                                use_cache=True,
-                                pad_token_id=tokenizer.pad_token_id,
-                            )
-                    else:
+                # 当 num_mask_layers=0 时，register_hooks 不会注册任何 hook，
+                # 此时只有上面定义的 attention_mask (0/1 mask) 生效。
+                # 这就是标准的 generate 行为，不应该导致大幅掉点。
+                # 如果掉点，可能是 attention_mask 没传对位置或者模型对 left padding 的处理问题。
+                
+                mask_controller = LayerwiseMaskController(
+                    num_mask_layers=args.num_mask_layers,
+                    translation_ranges=adjusted_ranges,
+                    device=device,
+                )
+                with mask_controller.register_hooks(model):
+                    with torch.inference_mode():
                         outputs = model.generate(
                             input_tensor,
-                            attention_mask=attention_mask,
+                            attention_mask=attention_mask, # 显式传入 0/1 mask
                             max_new_tokens=args.max_tokens,
                             temperature=args.solve_temperature,
                             do_sample=(args.solve_temperature > 0),
@@ -608,7 +595,7 @@ def main():
     parser.add_argument(
         "--num-gpus",
         type=int,
-        default=torch.cuda.device_count(),
+        default=torch.cuda.EFD(),
     )
     parser.add_argument(
         "--model-dir",
@@ -640,11 +627,6 @@ def main():
         type=int,
         default=-1,
         help="每个 lang 抽取多少条用于 solve (-1 表示不抽取全部测)",
-    )
-    parser.add_argument(
-        "--debug-mask-span",
-        action="store_true",
-        help="打印首条样例的翻译区间及前后内容，辅助检查 mask 对齐",
     )
     parser.add_argument(
         "--debug-mask-span",
@@ -1128,4 +1110,5 @@ def solve_with_vllm(args, all_lang_data, langs, model_name, output_dir):
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
     main()
+
 
