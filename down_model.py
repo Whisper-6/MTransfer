@@ -6,6 +6,10 @@ BASE_DIR = Path("/root/autodl-tmp/local_model")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 MODELS = [
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen2.5-1.5B-Instruct",
+    "Qwen/Qwen2.5-3B-Instruct",
+    "Qwen/Qwen2.5-7B-Instruct",
     "Qwen/Qwen3-4B",
     "Qwen/Qwen3-8B",
 ]
