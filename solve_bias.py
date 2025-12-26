@@ -108,40 +108,63 @@ class LayerwiseMaskController:
         q_pos = torch.arange(kv_len - q_len, kv_len, device=hidden_states.device, dtype=start.dtype).view(1, q_len, 1)
         k_pos = torch.arange(kv_len, device=hidden_states.device, dtype=start.dtype).view(1, 1, kv_len)
         mask = (q_pos >= end) & (k_pos >= start) & (k_pos < end)  # [B, q, kv]
+        
+        # 统一使用 float32 以保证 mask 的数值稳定性，避免 bfloat16/float16 下的精度问题
+        dtype = torch.float32
+        # float32 下可以使用更激进的负数，确保 softmax 后为 0
+        min_val = -1e9
+
+        # 构造 bias [B, 1, q, kv]
         bias_q = torch.zeros(
             (bsz, 1, q_len, kv_len),
             device=hidden_states.device,
-            dtype=hidden_states.dtype,
-        ).masked_fill(mask.unsqueeze(1), torch.finfo(hidden_states.dtype).min)
-        if bias_q.size(1) != head_dim:
-            bias_q = bias_q.expand(-1, head_dim, -1, -1)
+            dtype=dtype,
+        ).masked_fill(mask.unsqueeze(1), min_val)
+
+        # 确保 bias_q 最后一维连续，且 shape 匹配 head_dim
+        # 为了兼容性，我们直接 expand 到完整 shape [B, head_dim, q, kv] 再 contiguous
+        bias_q = bias_q.expand(-1, head_dim, -1, -1).contiguous()
 
         if attn_mask is None:
-            attn_mask_exp = None
-        else:
-            # 规范化 attn_mask 到 [B, head_dim, q, kv]，尽量使用 expand 而非复制
-            if attn_mask.dim() == 2:
-                attn_mask_exp = attn_mask[:, None, None, :].expand(-1, head_dim, -1, -1)
-            elif attn_mask.dim() == 3:
-                attn_mask_exp = attn_mask[:, None, :, :].expand(-1, head_dim, -1, -1)
-            elif attn_mask.dim() == 4:
-                if attn_mask.size(1) == head_dim:
-                    attn_mask_exp = attn_mask
-                elif attn_mask.size(1) == 1:
-                    attn_mask_exp = attn_mask.expand(-1, head_dim, -1, -1)
-                else:
-                    attn_mask_exp = attn_mask[:, :1, :, :].expand(-1, head_dim, -1, -1)
-            else:
-                return None
-
-        if attn_mask_exp is None:
+            # 如果没有传入 attention_mask，直接使用我们的 bias
             kwargs["attention_mask"] = bias_q
         else:
+            # 如果有传入 attention_mask，需要将其广播到 [B, head_dim, q, kv] 并转为相同 dtype
+            # 注意：某些模型传入的 attn_mask 可能是 4D [B, 1, q, kv] 或者是 2D [B, kv]
+            
+            # 1. 维度扩展
+            if attn_mask.dim() == 2: # [B, kv]
+                attn_mask_exp = attn_mask[:, None, None, :]
+            elif attn_mask.dim() == 3: # [B, q, kv]
+                attn_mask_exp = attn_mask[:, None, :, :]
+            elif attn_mask.dim() == 4: # [B, 1/H, q, kv]
+                attn_mask_exp = attn_mask
+            else:
+                return None # 未知格式，放弃注入
+
+            # 2. 类型转换 (确保是加性 mask 而不是 bool)
+            if attn_mask_exp.dtype == torch.bool:
+                # bool 转 float: False -> 0, True -> min_val (注意 pytorch 定义通常 True 是 mask 掉)
+                # 但 transformers 通常: 0保留, 1 mask (对 bool) 或者 0保留, -inf mask (对 float)
+                # 安全起见，假设输入已经是 float (causal mask 通常是 float)
+                # 如果是 bool: ~mask * min_val ? 
+                # 大多数 causal LM 的 attention_mask 传入的是 float (0.0 或 -inf)
+                # 这里我们假设它已经是 float，或者强转
+                attn_mask_exp = attn_mask_exp.to(dtype)
+                # 如果转完全是 0/1，可能需要处理，但一般 causal mask 已经是 -inf/0
+            else:
+                attn_mask_exp = attn_mask_exp.to(dtype)
+
+            # 3. 广播到 [B, head_dim, q, kv]
             if attn_mask_exp.size(1) != head_dim:
-                attn_mask_exp = attn_mask_exp.mean(dim=1, keepdim=True).expand(
-                    -1, head_dim, -1, -1
-                )
-            kwargs["attention_mask"] = attn_mask_exp + bias_q
+                attn_mask_exp = attn_mask_exp.expand(-1, head_dim, -1, -1)
+            
+            # 4. 合并 & 确保连续
+            # 这一步非常关键：(A + B) 产生的新 tensor 不一定满足 SDPA 的 contiguous 要求
+            # 必须显式调用 .contiguous()
+            combined_mask = (attn_mask_exp + bias_q).contiguous()
+            kwargs["attention_mask"] = combined_mask
+
 
         # try:
         #     print(
@@ -199,16 +222,19 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
 
     # 优先 FlashAttention2
     try:
+        # 尝试使用 FlashAttention2，但如果 mask 报错太难搞，可以考虑设为 "eager" 或 "sdpa" (默认)
+        # 这里为了避开 strict contiguous 报错，先尝试去掉显式指定，让它自动选择或回退
+        # 如果依然报错，可以将 attn_implementation 设为 "eager"
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype="auto",
             device_map="auto",
             trust_remote_code=True,
-            attn_implementation="flash_attention_2",
+            attn_implementation="eager", 
         )
-        print(f"[Rank {rank}] Using FlashAttention2")
+        print(f"[Rank {rank}] Using Auto Attention Implementation")
     except Exception as e:
-        print(f"[Rank {rank}] FlashAttention2 not available ({e}), fallback to auto")
+        print(f"[Rank {rank}] Auto loading failed ({e}), fallback to auto")
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype="auto",
@@ -288,29 +314,72 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
                 )
                 solve_prompt = build_chat_prompt(tokenizer, solve_user_content)
 
-                input_ids = tokenizer.encode(
-                    solve_prompt, add_special_tokens=False
+                # 使用 offset_mapping 精确定位翻译区间，避免 tokenizer 在边界处合并 token 导致 off-by-one
+                enc = tokenizer(
+                    solve_prompt,
+                    add_special_tokens=False,
+                    return_offsets_mapping=True,
                 )
-
-                problem_part = (
-                    solve_prompt.split("Translation:")[0] + "Translation: "
-                )
-                problem_ids = tokenizer.encode(
-                    problem_part, add_special_tokens=False
-                )
-                translation_start_idx = len(problem_ids)
+                input_ids = enc["input_ids"]
+                offsets = enc.get("offset_mapping", None)
 
                 solve_part_start = solve_prompt.find(
                     "\n\nSolve the above problem"
                 )
-                if solve_part_start > 0:
-                    pre_solve = solve_prompt[:solve_part_start]
-                    pre_solve_ids = tokenizer.encode(
-                        pre_solve, add_special_tokens=False
+                if offsets:
+                    # 起点包含 "Translation:" 标签本身
+                    start_char = solve_prompt.index("Translation:")
+                    end_char = (
+                        solve_part_start
+                        if solve_part_start > 0
+                        else len(solve_prompt)
                     )
-                    translation_end_idx = len(pre_solve_ids)
+                    translation_start_idx = next(
+                        i for i, (s, e) in enumerate(offsets) if e > start_char
+                    )
+                    translation_end_idx = (
+                        max(i for i, (s, e) in enumerate(offsets) if s < end_char)
+                        + 1
+                    )
                 else:
-                    translation_end_idx = len(input_ids)
+                    # 退回旧逻辑（不依赖 offset_mapping）
+                    problem_part = solve_prompt.split("Translation:")[0]
+                    problem_ids = tokenizer.encode(
+                        problem_part, add_special_tokens=False
+                    )
+                    translation_start_idx = len(problem_ids)
+                    if solve_part_start > 0:
+                        pre_solve = solve_prompt[:solve_part_start]
+                        pre_solve_ids = tokenizer.encode(
+                            pre_solve, add_special_tokens=False
+                        )
+                        translation_end_idx = len(pre_solve_ids)
+                    else:
+                        translation_end_idx = len(input_ids)
+
+                # 仅首条样例打印翻译区间及上下文，检查是否误遮题干
+                if getattr(args, "debug_mask_span", False) and batch_idx == 0 and len(raw_input_ids) == 0:
+                    # question_tail 去掉 "Translation:" 标签，方便观察题干末尾
+                    if offsets:
+                        label_char = solve_prompt.index("Translation:")
+                        label_tok = next(i for i, (s, e) in enumerate(offsets) if e > label_char)
+                        before_tail = tokenizer.decode(
+                            input_ids[:label_tok]
+                        )
+                    else:
+                        before_tail = tokenizer.decode(
+                            input_ids[:translation_start_idx]
+                        )
+
+                    span = tokenizer.decode(
+                        input_ids[translation_start_idx:translation_end_idx]
+                    )
+                    after_head = tokenizer.decode(
+                        input_ids[translation_end_idx:translation_end_idx + 120]
+                    )[:120]
+                    print(f"[Debug][Rank {rank}] translation span: {span[:200]}...")
+                    print(f"[Debug][Rank {rank}] before span tail: {before_tail}")
+                    print(f"[Debug][Rank {rank}] after span head: {after_head}")
 
                 raw_input_ids.append(torch.tensor(input_ids, dtype=torch.long))
                 raw_translation_ranges.append(
@@ -341,6 +410,11 @@ def worker_solve(rank, args, rank_lang_data, return_dict, progress):
                     padded_ids = ids
                 padded_input_ids.append(padded_ids)
                 adjusted_ranges.append((start + pad_len, end + pad_len))
+                if getattr(args, "debug_mask_span", False) and batch_idx == 0:
+                    print(
+                        f"[Debug][Rank {rank}] adjusted range: {(start + pad_len, end + pad_len)}, "
+                        f"padded_len: {len(padded_ids)}"
+                    )
 
             input_tensor = torch.stack(padded_input_ids).to(device)
             attention_mask = (input_tensor != tokenizer.pad_token_id).long()
@@ -506,6 +580,11 @@ def main():
         type=int,
         default=-1,
         help="每个 lang 抽取多少条用于 solve (-1 表示不抽取全部测)",
+    )
+    parser.add_argument(
+        "--debug-mask-span",
+        action="store_true",
+        help="打印首条样例的翻译区间及前后内容，辅助检查 mask 对齐",
     )
 
     args = parser.parse_args()
