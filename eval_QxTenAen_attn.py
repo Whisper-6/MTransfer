@@ -57,7 +57,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
     # ============================================
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
-    BATCH_SIZE = 1  # 减少以节省内存
+    BATCH_SIZE = 3  # 减少以节省内存
         
     PROBLEM_MARK = "<|problem|>"
     TRANSLATION_MARK = "<|translation|>"
@@ -86,7 +86,11 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
         "Solve the above problem and enclose the final number at the end "
         "of the response in $\\boxed{{}}$."
     )
-    
+    default_segname = {"problem", "translation", "generation"}
+    default_stats = {}
+    for seg in default_segname:
+        default_stats[seg] = 0.0
+        default_stats[f"{seg}_uni"] = 0.0
     # ============================================
     
     llm = LLM(model=model_path, dtype="half")
@@ -174,7 +178,6 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
             for i in range(0, len(iterable), chunk_size):
                 yield iterable[i:i + chunk_size]
                 
-        BATCH_SIZE = 1  # 减少以节省内存
             
         SOLVE_PROMPT_MARKED = (
             f"{PROBLEM_MARK}\n"
@@ -315,11 +318,7 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
                 per_layer_stats = []
 
                 for l in range(L):
-                    stats = {
-                        "problem": 0.0,
-                        "translation": 0.0,
-                        "generation": 0.0,
-                    }
+                    stats = default_stats.copy()
 
                     layer_attn = attn_layer[l, b]  # (T, T)
 
@@ -335,7 +334,9 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
                         for name, (s, e) in regions.items():
                             if name == "full_ids":
                                 continue
-                            stats[name] += row[s:e].sum().item() / total
+                            S = row[s:e].sum().item() / total
+                            stats[name] += S
+                            stats[f"{name}_uni"] += S / (e - s + 1)
 
                     num_gen = max(1, g_end - g_start)
                     for k in stats:
@@ -370,8 +371,12 @@ def worker_process(rank, args, rank_lang_data, return_dict, progress):
             layerwise_results.extend(batch_layerwise)
             if iteration % 10 == 0 or iteration == math.ceil(len(full_texts) / BATCH_SIZE):
                 print(f"Worker {rank} attention batches computed: {iteration}/{math.ceil(len(full_texts) / BATCH_SIZE)}")
+                print(f"Mem allocated: {torch.cuda.memory_allocated()/1e9:.2f}GB, reserved: {torch.cuda.memory_reserved()/1e9:.2f}GB")
+
+            del attn, attention_mask
             if is_debug:
                 print(f"attention batch computed: {batch_layerwise}")
+                print(f"Mem allocated: {torch.cuda.memory_allocated()/1e9:.2f}GB, reserved: {torch.cuda.memory_reserved()/1e9:.2f}GB")
             
 
         # ---------- 更新进度 ----------
@@ -478,7 +483,7 @@ def main():
     args.sources = ["mgsm", "polymath-low"]
 
     # 固定 config 名，仅用于路径
-    config_name = "QxTenAen-2step-v2"
+    config_name = "QxTenAen-2step-attn_eval"
 
     if args.output_dir is None:
         args.output_dir = os.path.join("output", args.model, config_name)
@@ -594,11 +599,11 @@ def main():
                 "correct": agg["correct"],
                 "accuracy": round(acc, 4),
                 "ci_radius": round(ci_radius, 4),
-                "attention_dist": [
+                "attention_dist": json.dumps([
                     {region: value / agg["total"] 
                     for region, value in layer.items()} 
                     for layer in agg["attention_dist"]
-                ] if agg["total"] else None,
+                ] if agg["total"] else None),
             })
             if attn_total is None:
                 attn_total = agg["attention_dist"]
@@ -618,11 +623,11 @@ def main():
             "correct": total_correct,
             "accuracy": round(acc_total, 4),
             "ci_radius": round(ci_radius_total, 4),
-            "attention_dist": [
+            "attention_dist": json.dumps([
                     {region: value / total_trials 
                     for region, value in layer.items()} 
                     for layer in attn_total
-                ] if total_trials else None,
+                ] if total_trials else None),
         })
 
         if all_samples:
@@ -650,7 +655,7 @@ def main():
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["language", "source", "total", "correct", "accuracy", "ci_radius"]
+            fieldnames=["language", "source", "total", "correct", "accuracy", "ci_radius", "attention_dist"]
         )
         writer.writeheader()
         writer.writerows(summary_rows)
