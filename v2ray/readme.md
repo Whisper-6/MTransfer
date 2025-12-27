@@ -9,6 +9,8 @@
   - V2Ray: `/cephfs/shared/jiarui/v2ray/config.json` (使用 tcp/trojan 协议)
   - Xray: `/cephfs/shared/jiarui/v2ray/config2.json` (使用 xhttp/vless 协议)
 
+啦啦啦
+
 ### 一、启动代理服务（建议在 tmux 中后台运行）
 
 #### 方式 1：使用 V2Ray（标准协议）
