@@ -208,5 +208,9 @@ __marimo__/
 
 tmp.sh
 
+.vscode/
+
 output/**/*.csv
 !output/**/result.csv
+translation/**/*.jsonl
+hf_output/**/*.jsonl
