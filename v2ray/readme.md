@@ -4,17 +4,6 @@
 * **本项目路径**：`/cephfs/shared/jiarui/v2ray`
 * **Xray 核心文件**：
 
-<<<<<<< HEAD
-啦啦啦
-
-### 一、启动代理服务（建议在 tmux 中后台运行）
-=======
-  ```text
-  /cephfs/shared/jiarui/v2ray/bin/xray
-  ```
-* **Xray 配置文件**（使用 xhttp / vless 等新协议）：
->>>>>>> 50f6ddf960bed7adc5ed968c1d7698bd29165736
-
   ```text
   /cephfs/shared/jiarui/v2ray/config2.json
   ```
