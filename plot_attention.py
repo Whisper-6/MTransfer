@@ -85,8 +85,8 @@ def plot_attention_from_csv(
         plt.close()
 
 if __name__ == "__main__":
-    
-    csv_path = "./output/Qwen2.5-1.5B-Instruct/QxTenAen-2step-attn_eval/result.csv"  # 替换成你的 CSV 路径
+    model = "Qwen2.5-0.5B"
+    csv_path = f"./output/{model}-Instruct/QxTenAen-2step-attn_eval/result.csv"  # 替换成你的 CSV 路径
     lang = ["ja", "de", "ru", "fr", "bn", "es", "th"]
     for l in lang: 
         plot_attention_from_csv(
@@ -94,7 +94,7 @@ if __name__ == "__main__":
             language=l,
             source="total",
             fields=("problem", "translation"),
-            output_dir="output/attn_plot/Qwen2.5-1.5B",     # 保存到 ./output
+            output_dir=f"output/attn_plot/{model}",     # 保存到 ./output
             show=False,               # 不弹窗，只保存
-            model_name="Qwen2.5-1.5B"
+            model_name=f"{model}"
         )

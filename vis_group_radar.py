@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 # ----------------------
 # 参数
 # ----------------------
@@ -22,7 +23,8 @@ args = parser.parse_args()
 root_dir = args.result_dir
 radar_min, radar_max = args.min, args.max
 
-subfolders_to_plot = ["QxAx", "QxAen", "QxTenAen", "QxTenAen-2step", "QxTenAen-2step-v2"]
+subfolders_to_plot = ["QxAx", "QxAen", "QxTenAen"]
+
 
 # ----------------------
 # 收集数据
@@ -53,6 +55,7 @@ if not data_dict:
     print("No data found.")
     exit(0)
 
+
 # ----------------------
 # 雷达图维度
 # ----------------------
@@ -60,6 +63,7 @@ languages = sorted(list(all_languages))
 N = len(languages)
 angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
 angles += angles[:1]
+
 
 # ======================
 # 雷达图
@@ -137,43 +141,110 @@ radar_path = os.path.join(root_dir, "radar_comparison.png")
 plt.savefig(radar_path, bbox_inches="tight")
 plt.close(fig)
 
+
 # ======================
-# 新增：均值条形图
+# 新增：均值条形图 + CI + 表格（按要求修改）
 # ======================
 folders = []
 mean_accs = []
 mean_cis = []
 
+# 1) 非 en 任务的均值和 CI
 for folder in subfolders_to_plot:
     if folder not in data_dict:
         continue
 
+    # 只统计非 en 语言
     accs = [data_dict[folder][l][0] for l in languages]
     cis = [data_dict[folder][l][1] for l in languages]
 
     folders.append(folder)
-    mean_accs.append(np.mean(accs))
-    mean_cis.append(np.mean(cis))
+    mean_accs.append(np.mean(accs))      # 还在 0-1 区间
+    mean_cis.append(np.mean(cis))        # 同样在 0-1 区间
+
+# 2) en 的 CI：每个 en 源头的 CI 的均值再除以 sqrt(源的个数)
+en_cis = []
+en_accs = []
+en_sources = 0
+
+for folder in subfolders_to_plot:
+    csv_path = os.path.join(root_dir, folder, "result.csv")
+    if not os.path.exists(csv_path):
+        continue
+
+    df = pd.read_csv(csv_path)
+    df_en = df[df["language"] == "en"]
+
+    if df_en.empty:
+        continue
+
+    # 对 en 的所有 source 统计 accuracy 和 ci_radius
+    accs_en = df_en["accuracy"].values
+    cis_en = df_en["ci_radius"].values
+
+    if len(accs_en) > 0:
+        en_accs.append(np.mean(accs_en))    # 各 task 的 en 平均 acc
+        en_cis.append(np.mean(cis_en))      # 各 task 的 en 平均 CI
+        en_sources += 1
+
+if en_sources > 0:
+    en_acc_mean = np.mean(en_accs)
+    en_ci_mean = np.mean(en_cis) / np.sqrt(en_sources)
+else:
+    en_acc_mean = 0.0
+    en_ci_mean = 0.0
 
 folders.append("en_global")
-mean_accs.append(en_acc_global)
-mean_cis.append(0.0)
+mean_accs.append(en_acc_mean)
+mean_cis.append(en_ci_mean)
 
-fig, ax = plt.subplots(figsize=(8, 5))
+# 3) 所有分数和 CI 乘 100，变成百分数
+mean_accs = np.array(mean_accs) * 100.0
+mean_cis = np.array(mean_cis) * 100.0
+
+# 4) 绘制条形图：大小 (4,5)，bar width=0.8，每个棒不同颜色
+fig, ax = plt.subplots(figsize=(3, 5))
+
+x = np.arange(len(folders))
+width = 0.8
+
+# 几种颜色循环使用
+bar_colors = plt.cm.tab10(np.linspace(0, 1, len(folders)))
+
 ax.bar(
-    folders,
+    x,
     mean_accs,
     yerr=mean_cis,
-    capsize=5
+    capsize=5,
+    width=width,
+    color=bar_colors,
+    edgecolor='black',
 )
-ax.set_ylim(radar_min, radar_max)
-ax.set_ylabel("Mean Accuracy (non-en)")
+
+ax.set_xticks(x)
+ax.set_xticklabels(folders, rotation=45, ha='right')
+ax.set_ylim(radar_min * 100.0, radar_max * 100.0)
+ax.set_ylabel("Mean Accuracy (%)")
 ax.set_title("Mean Accuracy Across Languages")
-ax.grid(axis="y")
+ax.grid(axis="y", linestyle="--", alpha=0.5)
 
 bar_path = os.path.join(root_dir, "mean_accuracy_bar.png")
+plt.tight_layout()
 plt.savefig(bar_path, bbox_inches="tight")
 plt.close(fig)
 
+# 5) 输出简易表格：task 名称，score (xx.xx +- yy.yy)
+rows = []
+for name, acc, ci in zip(folders, mean_accs, mean_cis):
+    rows.append(f"{name:20s} {acc:6.2f} +- {ci:6.2f}")
+
+table_text = "\n".join(rows)
+table_path = os.path.join(root_dir, "mean_accuracy_summary.txt")
+with open(table_path, "w", encoding="utf-8") as f:
+    f.write(table_text + "\n")
+
 print(f"Radar plot saved to {radar_path}")
 print(f"Bar chart saved to {bar_path}")
+print("Summary table:")
+print(table_text)
+print(f"Summary table saved to {table_path}")
