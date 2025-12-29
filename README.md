@@ -20,7 +20,7 @@ AutoDL 访问 HuggingFace 需要加速：`source /etc/network_turbo`
 - mgsm:   bn de en es fr ja ru sw te th zh
 - MSVAMP: bn de en es fr ja ru sw th zh
 
-最终选择的测试语言: bn de es fr ja ru th (sw 表现太差，删去)
+最终选择的测试语言: bn de es fr ja ru th (sw 和 te 表现太差，删去)
 
 运行 `down_datasets.sh` 生成数据集
 

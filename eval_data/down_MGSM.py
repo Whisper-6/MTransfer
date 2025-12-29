@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 REPO_ID = "juletxara/mgsm"
 LANGS = ["bn", "de", "es", "fr", "ja", "ru", "th", "en"]
-OUTPUT_DIR = "mgsm"
+OUTPUT_DIR = "mgsm_raw"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

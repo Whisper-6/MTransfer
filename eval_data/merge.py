@@ -3,17 +3,15 @@ import json
 import re
 
 BASE_DIR = os.getcwd()
-OUTPUT_DIR = os.path.join(BASE_DIR, "mmath")
+OUTPUT_DIR = os.path.join(BASE_DIR, "mgsm")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 LANGS = ["bn", "de", "es", "fr", "ja", "ru", "th"]
 EN_LANG = "en"
 
 DATASETS = {
-    "mgsm": {"prefix": ""},
-    "polymath_low": {"prefix": "polymath-"},
+    "mgsm_raw": {"prefix": ""},
 }
-
 
 def load_jsonl(file_path):
     """读取 jsonl 文件"""
@@ -22,14 +20,11 @@ def load_jsonl(file_path):
 
 
 def process_answer(ans):
-    """消除非数字符号，将数字转为整数"""
     if ans is None:
         return None
-    # 去掉所有非数字和非小数点的字符
     clean = re.sub(r"[^\d.]+", "", str(ans))
     if clean == "":
         return None
-    # 转整数
     try:
         return int(float(clean))
     except:
