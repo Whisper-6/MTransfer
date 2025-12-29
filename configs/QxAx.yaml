@@ -1,40 +1,42 @@
+question_field: "m_query"
+
 languages:
   bn:
     prompt: |
-      {question}
-      নিম্নলিখিত গণিত প্রশ্নটি সমাধান করো এবং উত্তরের শেষে চূড়ান্ত সংখ্যাসূচক উত্তরটি $\boxed{{}}$ এর মধ্যে লেখো। অনুগ্রহ করে বাংলায় উত্তর দাও।
+      সমস্যা: {question}
+      সমস্যাটি বাংলায় সমাধান করুন এবং উত্তরের শেষে চূড়ান্ত সংখ্যাটিকে $\boxed{{}}$ এর মধ্যে লিখুন।
 
   de:
     prompt: |
-      {question}
-      Löse die folgende Mathematikaufgabe und gib die endgültige numerische Antwort am Ende in $\boxed{{}}$ an. Bitte antworte auf Deutsch.
+      Aufgabe: {question}
+      Lösen Sie die Aufgabe auf Deutsch und geben Sie die endgültige Zahl am Ende der Antwort in $\boxed{{}}$ an.
 
   es:
     prompt: |
-      {question}
-      Resuelve la siguiente pregunta de matemáticas y encierra la respuesta numérica final al final en $\boxed{{}}$. Por favor, responde en español.
+      Problema: {question}
+      Resuelva el problema en español y encierre el número final al final de la respuesta en $\boxed{{}}$.
 
   fr:
     prompt: |
-      {question}
-      Résous la question de mathématiques suivante et encadre la réponse numérique finale à la fin avec $\boxed{{}}$. Veuillez répondre en français.
+      Problème : {question}
+      Résolvez le problème en français et encadrez le nombre final à la fin de la réponse dans $\boxed{{}}$.
 
   ja:
     prompt: |
-      {question}
-      次の数学の問題を解き、最後に最終的な数値の答えを $\boxed{{}}$ で囲んで書いてください。日本語で答えてください。
+      問題: {question}
+      問題を日本語で解き、最終的な数値を回答の最後に $\boxed{{}}$ で囲んでください。
 
   ru:
     prompt: |
-      {question}
-      Реши следующую математическую задачу и заключи окончательный числовой ответ в $\boxed{{}}$. Пожалуйста, ответьте на русском.
+      Задача: {question}
+      Решите задачу на русском языке и заключите окончательное числовое значение в конце ответа в $\boxed{{}}$.
 
   th:
     prompt: |
-      {question}
-      แก้โจทย์คณิตศาสตร์ต่อไปนี้ และใส่คำตอบตัวเลขสุดท้ายไว้ท้ายคำตอบโดยครอบด้วย $\boxed{{}}$. โปรดตอบเป็นภาษาไทย
+      โจทย์: {question}
+      แก้โจทย์เป็นภาษาไทย และใส่คำตอบตัวเลขสุดท้ายไว้ใน $\boxed{{}}$ ตอนท้ายของคำตอบ
 
   en:
     prompt: |
-      {question}
-      Solve the above math question, and enclose the final number at the end of the response in $\boxed{{}}$.
+      Problem: {question}
+      Solve the problem and enclose the final number at the end of the response in $\boxed{{}}$.

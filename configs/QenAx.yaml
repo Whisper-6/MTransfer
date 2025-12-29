@@ -1,5 +1,3 @@
-# QenAxPen: Question in English, Answer in X language, Prompt in English
-# 英文问题，英文指令（但要求用指定语言回答）
 question_field: "query"
 
 languages:

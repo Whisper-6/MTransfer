@@ -211,7 +211,7 @@ tmp.sh
 
 .vscode/
 
-output/**/*.csv
-!output/**/result.csv
+eval_data/mgsm_raw
+output/**/*.jsonl
 translation/**/*.jsonl
 hf_output/**/*.jsonl

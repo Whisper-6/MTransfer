@@ -1,10 +1,10 @@
 import re
+import os
+import json
+import math
+import csv
 
-# ----------------------
-# 数字转换函数
-# ----------------------
 BENGALI_DIGITS = "০১২৩৪৫৬৭৮৯"
-
 def convert_to_arabic_digits(s):
     return ''.join(str(BENGALI_DIGITS.index(c)) if c in BENGALI_DIGITS else c for c in s)
 
@@ -37,3 +37,37 @@ def build_chat_prompt(tokenizer, user_content):
         add_generation_prompt=True,
         enable_thinking=False,
     )
+
+def save_results(args, langs, lang_results):
+    summary_rows = []
+
+    for lang in langs:
+        results = lang_results[lang]
+
+        correct = 0
+        total = len(results)
+
+        output_path = os.path.join(args.output_dir, f"{lang}.jsonl")
+        with open(output_path, "w", encoding="utf-8") as f:
+            for record in results:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                correct += record["is_correct"]
+
+        acc = correct / total
+        stderr = math.sqrt(acc * (1 - acc) / total)
+        ci_radius = 1.96 * stderr
+
+        summary_rows.append({
+            "language": lang,
+            "total": total,
+            "correct": correct,
+            "accuracy": round(acc, 6),
+            "ci_radius": round(ci_radius, 6),
+        })
+
+    summary_path = os.path.join(args.output_dir, "summary.csv")
+    with open(summary_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["language", "total", "correct", "accuracy", "ci_radius"])
+        writer.writeheader()
+        for row in summary_rows:
+            writer.writerow(row)
