@@ -1,3 +1,5 @@
+question_field: "m_query"
+
 languages:
   bn:
     prompt: |

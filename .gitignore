@@ -213,5 +213,9 @@ tmp.sh
 
 eval_data/mgsm_raw
 output/**/*.jsonl
+output/*/*/plots/*/
+!output/*/*/plots/total/
 translation/**/*.jsonl
 hf_output/**/*.jsonl
+plots/*/
+!plots/total/

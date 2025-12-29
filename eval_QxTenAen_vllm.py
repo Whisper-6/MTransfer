@@ -10,40 +10,28 @@ import yaml
 import random
 from tqdm import tqdm
 from transformers import AutoTokenizer
-from utils import last_number_from_text, build_chat_prompt
+from utils import last_number_from_text, build_chat_prompt, save_results
 
-language = {
-    "bn": "Bengali",
-    "de": "German",
-    "es": "Spanish",
-    "fr": "French",
-    "ja": "Japanese",
-    "ru": "Russian",
-    "th": "Thai",
-}
+langs = ["bn", "de", "es", "fr", "ja", "ru", "th"]
 
-TRANSLATE_PROMPT = (
-    "Problem: {question}\n"
-    "Translate the math problem from {language} into English, preserving all details. "
-    "Output only the translation without any additional text.\n"
-    "English Translation:"
+SOLVE_PROMPT = (
+    "English Translation: {translation}\n\n"
+    "Problem: {problem}\n\n"
+    "Solve the problem in English and enclose the final number at the end of the response in $\\boxed{{}}$.\n\n"
 )
-
-QUESTION_FIELD = "m_query"
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--num-samples", type=int, required=True)
-    parser.add_argument("--batch-size", type=int, required=True)
+    parser.add_argument("--batch-size", type=int, default=250)
     parser.add_argument("--num-gpus", type=int, default=torch.cuda.device_count())
-    parser.add_argument("--data-dir", default="eval_data/mgsm")
     parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model")
     args = parser.parse_args()
-    args.output_dir = os.path.join("output", args.model, "translation")
+    args.output_dir = os.path.join("output", args.model, "QxTenAen-2step-TPI")
+    args.data_dir = os.path.join("output", args.model, "translation")
     args.top_k = 64
     args.top_p = 0.9
-    args.max_tokens = 768
+    args.max_tokens = 1024
     args.temperature = 0.3
     return args
 
@@ -69,7 +57,6 @@ def worker_process(rank, args, data_batches, return_dict, progress):
                     temperature=args.temperature,
                     max_tokens=args.max_tokens,
                     stop=["<|user|>"],
-                    n=args.num_samples,
                     top_k=args.top_k,
                     top_p=args.top_p,
                     seed=None,
@@ -78,14 +65,21 @@ def worker_process(rank, args, data_batches, return_dict, progress):
             )
 
             for ex, ex_out in zip(batch, outputs):
+                ans = ex["answer"]
+
                 for out in ex_out.outputs:
-                    response = out.text.replace("Problem:", "").strip()
+                    response = out.text.strip()
+                    pred = last_number_from_text(response)
+                    is_correct = (pred == ans)
+
                     records.append({
                         "lang": ex["lang"],
                         "source": ex["source"],
-                        "problem": ex[QUESTION_FIELD],
-                        "translation": response,
-                        "answer": ex["answer"],
+                        "prompt": ex["prompt"],
+                        "response": response,
+                        "pred": pred if pred is not None else "",
+                        "answer": ans,
+                        "is_correct": int(is_correct),
                     })
 
             with progress.get_lock():
@@ -102,7 +96,6 @@ def worker_process(rank, args, data_batches, return_dict, progress):
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    langs = list(language.keys())
 
     # ---------- 加载数据 ----------
     data = []
@@ -124,7 +117,7 @@ def main():
 
     for ex in data:
         lang = ex["lang"]
-        user_content = TRANSLATE_PROMPT.format(language=language[lang], question=ex[QUESTION_FIELD])
+        user_content = SOLVE_PROMPT.format(problem=ex["problem"], translation=ex["translation"])
         prompt = build_chat_prompt(tokenizer, user_content)
         ex["prompt"] = prompt
 
@@ -174,13 +167,7 @@ def main():
         for record in return_dict[rank]:
             lang_results[record["lang"]].append(record)
     
-    for lang in langs:
-        results = lang_results[lang]
-        output_path = os.path.join(args.output_dir, f"{lang}.jsonl")
-        with open(output_path, "w", encoding="utf-8") as f:
-            for record in results:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    
+    save_results(args, langs, lang_results)
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)

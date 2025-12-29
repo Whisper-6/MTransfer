@@ -71,3 +71,34 @@ def save_results(args, langs, lang_results):
         writer.writeheader()
         for row in summary_rows:
             writer.writerow(row)
+
+def build_batches(gen_cost_ratio, data, B, max_mass):
+    points = [(ex["gen_start_idx"], gen_cost_ratio * ex["gen_len"]) for ex in data]
+    remaining = list(enumerate(points))  # 保存 index
+    data_batches = []
+    
+    while remaining:
+        idx0, (x0, y0) = min(remaining, key=lambda t: t[1][0]+t[1][1])
+        remaining.remove((idx0, (x0, y0)))
+    
+        def cost(t):
+            _, (x, y) = t
+            return max(x-x0,0) + max(y-y0,0)
+        
+        sorted_remain = sorted(remaining, key=cost)
+
+        batch = [(idx0, (x0, y0))]
+        max_x, max_y = x0, y0
+        for t in sorted_remain[:B-1]:
+            max_x, max_y = max(max_x, t[1][0]), max(max_y, t[1][1])
+            if (max_x + max_y) * len(batch) > B * max_mass:
+                break
+            batch.append(t)
+
+        for t in batch[1:]:
+            remaining.remove(t)
+
+        batch_data = [data[idx] for idx, _ in batch]
+        data_batches.append(batch_data)
+
+    return data_batches
