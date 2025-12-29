@@ -6,16 +6,15 @@ import random
 import time
 from tqdm import tqdm
 import multiprocessing as mp
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from utils import build_chat_prompt, last_number_from_text, save_results
 
 langs = ["bn", "de", "es", "fr", "ja", "ru", "th"]
-# langs = ["bn"]
 
 SOLVE_PROMPT = (
     "Problem: {problem}\n\n"
     "English Translation: {translation}\n\n"
-    "Solve the problem in English and enclose the final number at the end of the response in $\\boxed{{}}$.\n\n"
+    "Solve the problem in English and enclose the final number at the end of the response in $\\boxed{{}}$."
 )
 
 def parse_args():
@@ -29,12 +28,108 @@ def parse_args():
     args.data_dir = os.path.join("output", args.model, "translation")
     args.top_k = 64
     args.top_p = 0.9
-    args.max_tokens = 1024
+    args.max_tokens = 800
     args.temperature = 0.3
     return args
 
-import torch
-from tqdm import tqdm
+import torch.nn.functional as F
+from transformers.generation.logits_process import (
+    LogitsProcessorList,
+    TemperatureLogitsWarper,
+    TopPLogitsWarper,
+    TopKLogitsWarper,
+)
+
+@torch.no_grad()
+def prefill(
+    model,
+    input_ids,                 # [B, L_prompt]
+    attention_mask,            # [B, L_prompt], left padding = 0
+    block_size=32,
+):
+    B, L = input_ids.shape
+    past = None
+    for i in range(0, L, block_size):
+        step_ids = input_ids[:, i: i + block_size]           # [B, block_size]
+        step_mask = attention_mask[:, : i + block_size]      # [B, i + block_size]
+        outputs = model(
+            input_ids=step_ids,
+            attention_mask=step_mask,
+            past_key_values=past,
+            use_cache=True,
+            output_attentions=False,
+            output_hidden_states=False,
+        )
+        past = outputs.past_key_values
+
+    return past
+
+@torch.no_grad()
+def generate(
+    model,
+    input_ids,                 # [B, L_prompt]
+    attention_mask,            # [B, L_prompt], left padding = 0
+    eos_token_id,
+    max_new_tokens,
+    temperature=1.0,
+    top_p=1.0,
+    top_k=None,
+    past_key_values=None,
+):
+    device = input_ids.device
+    B, L = input_ids.shape
+
+    generated = input_ids.clone()
+    past = past_key_values
+
+    logits_processor = LogitsProcessorList()
+    if temperature != 1.0:
+        logits_processor.append(TemperatureLogitsWarper(temperature))
+    if top_p < 1.0:
+        logits_processor.append(TopPLogitsWarper(top_p))
+    if top_k != None:
+        logits_processor.append(TopKLogitsWarper(top_k))
+
+    # 1. Prefill prompt（如果没有给 past
+    if past is None:
+        past = prefill(model, input_ids, attention_mask)
+
+    # 2. Autoregressive generation
+    cur_len = generated.size(1)
+    B = input_ids.size(0)
+    finish_flags = torch.zeros(B, dtype=torch.bool, device=device)
+
+    for step in range(max_new_tokens):
+        step_ids = generated[:, -1:]
+        step_mask = torch.cat(
+            [attention_mask, torch.ones(B, cur_len - attention_mask.size(1) + 1, device=device)],
+            dim=1
+        )[:, : cur_len + 1]
+
+        outputs = model(
+            input_ids=step_ids,
+            attention_mask=step_mask,
+            past_key_values=past,
+            use_cache=True,
+            output_attentions=False,
+            output_hidden_states=False,
+        )
+
+        logits = outputs.logits[:, -1, :]
+        logits = logits_processor(generated, logits)
+        probs = F.softmax(logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)  # [B,1]
+
+        generated = torch.cat([generated, next_token], dim=1)
+        past = outputs.past_key_values
+
+        cur_len += 1
+
+        finish_flags = finish_flags | (next_token.squeeze(1) == eos_token_id)
+        if finish_flags.all():
+            break
+
+    return generated
 
 def worker_process(rank, args, data, return_dict, progress):
     import os
@@ -64,8 +159,8 @@ def worker_process(rank, args, data, return_dict, progress):
         # 按照 prompt 长度排序，减少 padding
         data.sort(key=lambda x: len(x["input_ids"]))
 
-        for i in range(0, len(data), batch_size):
-            batch = data[i:i + batch_size]
+        for start in range(0, len(data), batch_size):
+            batch = data[start:start + batch_size]
             B = len(batch)
 
             prompt_len = max([len(ex["input_ids"]) for ex in batch])
@@ -90,33 +185,22 @@ def worker_process(rank, args, data, return_dict, progress):
                 t_end += left_pad
                 spans.append((p_start, p_end, t_start, t_end))
 
-            # ---------- Prefill prompt (分块) ----------
-            past = None
-            block_size = 32
-            for start in range(0, prompt_len-1, block_size):
-                end = min(start + block_size, prompt_len-1)
-                input_ids_step = padded_input_ids[:, start:end]
-                mask_step = attention_mask[:, :end]
-                with torch.inference_mode():
-                    outputs = model(
-                        input_ids=input_ids_step,
-                        attention_mask=mask_step,
-                        past_key_values=past,
-                        use_cache=True,
-                        output_attentions=False
-                    )
-                past = outputs.past_key_values
+            prompt_kv_cache = prefill(
+                model,
+                padded_input_ids,
+                attention_mask,
+            )
 
-            # ---------- Generate response ----------
-            outputs = model.generate(
-                input_ids=padded_input_ids,        
-                attention_mask=attention_mask,     
-                past_key_values=past,              
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                top_k=args.top_k,
-                top_p=args.top_p,
+            outputs = generate(
+                model,
+                padded_input_ids,
+                attention_mask,
+                tokenizer.eos_token_id,
+                max_new_tokens,
                 temperature=args.temperature,
+                top_p=args.top_p,
+                top_k=args.top_k,
+                past_key_values=prompt_kv_cache
             )
 
             finished_count = 0
@@ -128,8 +212,8 @@ def worker_process(rank, args, data, return_dict, progress):
                     data_unfinished.append(ex)
                     continue
 
-                gen_len = eos_idx[0].item()
-                response = tokenizer.decode(response_ids[:gen_len], skip_special_tokens=False).strip()
+                eos_idx = eos_idx[0].item() if len(eos_idx) > 0 else len(response_ids)
+                response = tokenizer.decode(response_ids[:eos_idx], skip_special_tokens=False).strip()
 
                 pred = last_number_from_text(response)
                 ans = ex["answer"]
@@ -153,7 +237,6 @@ def worker_process(rank, args, data, return_dict, progress):
 
     data_unfinished = []
     run_generate(data, args.max_tokens // 2, args.batch_size * 2, data_unfinished)
-    print("unfinished samples:", len(data_unfinished))
     run_generate(data_unfinished, args.max_tokens, args.batch_size, None)
 
     return_dict[rank] = records
@@ -214,8 +297,6 @@ def main():
             continue
         with open(path, encoding="utf-8") as f:
             lang_data = [json.loads(l) for l in f]
-        random.shuffle(lang_data)
-        lang_data = lang_data[:500]
         for ex in lang_data:
             ex["lang"] = lang
         data.extend(lang_data)

@@ -1,6 +1,7 @@
 import os
 import json
 import argparse
+import random
 from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader
@@ -15,8 +16,7 @@ import csv
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", type=str, required=True)
 parser.add_argument("--model-dir", type=str, default="~/autodl-tmp/local_model/")
-parser.add_argument("--translation-dir", type=str, default="./translation/")
-parser.add_argument("--out-dir", type=str, default="./hf_output/")
+parser.add_argument("--out-dir", type=str, default="./output/")
 parser.add_argument("--batch-size", type=int, default=128)
 parser.add_argument("--num-gpus", type=int, default=torch.cuda.device_count())
 parser.add_argument("--do-sample", action="store_true", default=True, help="是否开启随机采样生成")
@@ -27,17 +27,17 @@ args = parser.parse_args()
 # 固定设置
 # ----------------------
 # languages = ["bn", "de", "es", "fr", "ja", "ru", "th"] 
-languages = ["bn", "fr", "ja"] 
+languages = ["bn"] 
 
 SOLVE_PROMPT = (
-    "Problem: {question}\n\n"
+    "Problem: {problem}\n\n"
     "Translation: {translation}\n\n"
     "Solve the above problem in English, and enclose the final number at the end of the response in $\\boxed{{}}$."
 )
 
 model_path = os.path.expanduser(os.path.join(args.model_dir, args.model))
-translation_path = os.path.expanduser(os.path.join(args.translation_dir, args.model))
-output_path = os.path.expanduser(os.path.join(args.out_dir, args.model, "QxTenAen"))
+translation_path = os.path.expanduser(os.path.join(args.out_dir, args.model, "translation"))
+output_path = os.path.expanduser(os.path.join(args.out_dir, args.model, "QxTenAen-hf"))
 os.makedirs(output_path, exist_ok=True)
 
 # ----------------------
@@ -47,20 +47,13 @@ def load_all_problems(languages, translation_path):
     all_problems = []
     for lang in languages:
         file_path = os.path.join(translation_path, f"{lang}.jsonl")
-        if not os.path.exists(file_path):
-            print(f"[WARN] {file_path} 不存在，跳过")
-            continue
         with open(file_path, "r", encoding="utf-8") as f:
             for line_num, line in enumerate(f, 1):
-                try:
-                    data = json.loads(line)
-                    if "original_question" not in data or "translation" not in data or "answer" not in data:
-                        print(f"[WARN] {file_path} 第 {line_num} 行缺字段，跳过")
-                        continue
-                    data["language"] = lang
-                    all_problems.append(data)
-                except json.JSONDecodeError:
-                    print(f"[WARN] {file_path} 第 {line_num} 行 JSON 错误，跳过")
+                data = json.loads(line)
+                data["language"] = lang
+                all_problems.append(data)
+    random.shuffle(all_problems)
+    all_problems = all_problems[:500]
     return all_problems
 
 all_problems = load_all_problems(languages, translation_path)
@@ -121,7 +114,7 @@ def run_on_gpu(gpu_id, problems, batch_size, temperature, do_sample, return_list
     # GPU 内部生成 prompt
     for p in problems:
         p["prompt"] = SOLVE_PROMPT.format(
-            question=p["original_question"],
+            problem=p["problem"],
             translation=p["translation"]
         )
 
