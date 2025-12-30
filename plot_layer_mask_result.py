@@ -3,117 +3,124 @@ import csv
 import math
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import cm
-from collections import defaultdict
+
 
 ROOT = "./output/Qwen2.5-1.5B-Instruct/QxTenAen-2step-hf-mask"
+TOTAL_LAYERS = 28
 
 
-# ==================================================
-# 1. 读取所有层 & 语言结果
-# ==================================================
-def load_layer_results(root):
-    layer_dirs = [
-        d for d in os.listdir(root)
-        if d.startswith("L") and d[1:].isdigit()
-    ]
-    layer_dirs = sorted(layer_dirs, key=lambda x: int(x[1:]))
+def load_cover_results(root):
+    """
+    读取所有 L[l, r] / None 文件夹
+    返回:
+        cover_results[(l, r)] = (mean_acc, mean_ci)
+        其中 None -> (None, None)
+    """
+    cover_results = {}
 
-    layers = []
-    layer_lang_scores = {}           # layer -> [(lang, acc)]
-    lang_layer_scores = defaultdict(dict)  # lang -> {layer: acc}
-    layer_ci = {}                    # layer -> mean_ci
+    for d in os.listdir(root):
+        if d == "None":
+            l, r = None, None
+        else:
+            if not (d.startswith("L[") and d.endswith("]")):
+                continue
+            inside = d[2:-1].strip()
+            l, r = map(int, inside.split(","))
 
-    for layer_name in layer_dirs:
-        layer_idx = int(layer_name[1:])
-        csv_path = os.path.join(root, layer_name, "summary.csv")
+        csv_path = os.path.join(root, d, "summary.csv")
+        if not os.path.exists(csv_path):
+            continue
 
         accs = []
         cis = []
-        lang_scores = []
 
         with open(csv_path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                lang = row["language"]
-                acc = float(row["accuracy"])
-                ci = float(row["ci_radius"])
+                accs.append(float(row["accuracy"]))
+                cis.append(float(row["ci_radius"]))
 
-                accs.append(acc)
-                cis.append(ci)
-                lang_scores.append((lang, acc))
-                lang_layer_scores[lang][layer_idx] = acc
+        if len(accs) == 0:
+            continue
 
-        layers.append(layer_idx)
-        layer_lang_scores[layer_idx] = lang_scores
-        layer_ci[layer_idx] = np.mean(cis) / math.sqrt(len(accs))
+        mean_acc = np.mean(accs)
+        mean_ci = np.mean(cis) / math.sqrt(len(accs))
 
-    layers = np.array(sorted(layers))
-    return layers, layer_lang_scores, lang_layer_scores, layer_ci
+        cover_results[(l, r)] = (mean_acc, mean_ci)
+
+    return cover_results
 
 
 # ==================================================
-# 2. 图 1：所有语言均值 vs Layer
+# 2. 提取前向 / 后向覆盖趋势
 # ==================================================
-def plot_layer_mean(layers, layer_lang_scores, layer_ci, root):
-    mean_acc = []
-    mean_ci = []
+def extract_trends(cover_results, total_layers):
+    """
+    返回:
+        prefix: [(x, acc, ci)]  对应 None + L[0, x]
+        suffix: [(x, acc, ci)]  对应 L[x, total_layers] + None
+    """
+    if (None, None) not in cover_results:
+        raise ValueError("Missing baseline result")
 
-    for l in layers:
-        accs = [acc for _, acc in layer_lang_scores[l]]
-        mean_acc.append(np.mean(accs))
-        mean_ci.append(layer_ci[l])
+    base_acc, base_ci = cover_results[(None, None)]
 
-    mean_acc = np.array(mean_acc)
-    mean_ci = np.array(mean_ci)
+    # ---------- 前向覆盖 ----------
+    prefix = [(0, base_acc, base_ci)]
+    for (l, r), (acc, ci) in cover_results.items():
+        if l == 0:
+            prefix.append((r, acc, ci))
 
-    plt.figure(figsize=(7, 5))
-    plt.plot(layers, mean_acc, linewidth=2)
-    plt.fill_between(
-        layers,
-        mean_acc - mean_ci,
-        mean_acc + mean_ci,
-        alpha=0.2
+    prefix = sorted(set(prefix), key=lambda x: x[0])
+
+    # ---------- 后向覆盖 ----------
+    suffix = [(total_layers, base_acc, base_ci)]
+    for (l, r), (acc, ci) in cover_results.items():
+        if r == total_layers:
+            suffix.append((l, acc, ci))
+
+    suffix = sorted(set(suffix), key=lambda x: x[0])
+
+    return prefix, suffix
+
+
+# ==================================================
+# 3. 绘图：同一张图展示两条趋势
+# ==================================================
+def plot_cover_trends(prefix, suffix, root):
+    plt.figure(figsize=(8, 5.5))
+
+    # -------- 前向覆盖 --------
+    x1, y1, ci1 = zip(*prefix)
+    plt.errorbar(
+        x1, y1,
+        yerr=ci1,
+        marker="o",
+        linestyle="-",
+        linewidth=2,
+        capsize=3,
+        label="Cover from front: L[0, x]"
     )
 
-    plt.xlabel("Layer")
+    # -------- 后向覆盖 --------
+    x2, y2, ci2 = zip(*suffix)
+    plt.errorbar(
+        x2, y2,
+        yerr=ci2,
+        marker="o",
+        linestyle="-",
+        linewidth=2,
+        capsize=3,
+        label="Cover from back: L[x, 28]"
+    )
+
+    plt.xlabel("Coverage Boundary Layer")
     plt.ylabel("Mean Accuracy")
-    plt.title("Mean Accuracy Across Languages vs Layer")
+    plt.title("Accuracy vs Coverage Range")
     plt.grid(True, linestyle="--", alpha=0.4)
+    plt.legend()
 
-    out_path = os.path.join(root, "layer_mean_accuracy.png")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=200)
-    plt.close()
-
-    print("Saved:", out_path)
-
-
-# ==================================================
-# 3. 图 2：每个语言的分层折线
-# ==================================================
-def plot_per_language(layers, lang_layer_scores, root):
-    plt.figure(figsize=(8, 6))
-
-    cmap = cm.get_cmap("tab10", len(lang_layer_scores))
-
-    for i, (lang, layer_scores) in enumerate(sorted(lang_layer_scores.items())):
-        ys = [layer_scores[l] for l in layers]
-        plt.plot(
-            layers,
-            ys,
-            label=lang,
-            linewidth=2,
-            color=cmap(i)
-        )
-
-    plt.xlabel("Layer")
-    plt.ylabel("Accuracy")
-    plt.title("Per-Language Accuracy vs Layer")
-    plt.legend(ncol=2, fontsize=9)
-    plt.grid(True, linestyle="--", alpha=0.4)
-
-    out_path = os.path.join(root, "per_language_layer_accuracy.png")
+    out_path = os.path.join(root, "coverage_trends.png")
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
     plt.close()
@@ -125,7 +132,6 @@ def plot_per_language(layers, lang_layer_scores, root):
 # 4. main
 # ==================================================
 if __name__ == "__main__":
-    layers, layer_lang_scores, lang_layer_scores, layer_ci = load_layer_results(ROOT)
-
-    plot_layer_mean(layers, layer_lang_scores, layer_ci, ROOT)
-    plot_per_language(layers, lang_layer_scores, ROOT)
+    cover_results = load_cover_results(ROOT)
+    prefix, suffix = extract_trends(cover_results, TOTAL_LAYERS)
+    plot_cover_trends(prefix, suffix, ROOT)

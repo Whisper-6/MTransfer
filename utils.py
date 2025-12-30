@@ -39,7 +39,17 @@ def build_chat_prompt(tokenizer, user_content):
     )
 
 def save_results(args, langs, lang_results):
+    os.makedirs(args.output_dir, exist_ok=True)
+
     summary_rows = []
+    def get_acc(correct, total):
+        acc = correct / total
+        stderr = math.sqrt(acc * (1 - acc) / total)
+        ci_radius = 1.96 * stderr
+        return acc, ci_radius
+
+    correct_all = 0
+    total_all = 0
 
     for lang in langs:
         results = lang_results[lang]
@@ -53,9 +63,7 @@ def save_results(args, langs, lang_results):
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 correct += record["is_correct"]
 
-        acc = correct / total
-        stderr = math.sqrt(acc * (1 - acc) / total)
-        ci_radius = 1.96 * stderr
+        acc, ci_radius = get_acc(correct, total)
 
         summary_rows.append({
             "language": lang,
@@ -64,6 +72,18 @@ def save_results(args, langs, lang_results):
             "accuracy": round(acc, 6),
             "ci_radius": round(ci_radius, 6),
         })
+
+        correct_all += correct
+        total_all += total
+
+    acc_all, ci_radius_all = get_acc(correct_all, total_all)
+    summary_rows.append({
+        "language": "all",
+        "total": total_all,
+        "correct": correct_all,
+        "accuracy": round(acc_all, 6),
+        "ci_radius": round(ci_radius_all, 6),
+    })
 
     summary_path = os.path.join(args.output_dir, "summary.csv")
     with open(summary_path, "w", encoding="utf-8", newline="") as f:

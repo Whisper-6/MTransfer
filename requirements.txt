@@ -2,4 +2,3 @@ datasets==4.4.2
 PyYAML==6.0.2
 transformers==4.57.3
 vllm==0.13.0
-accelerate==1.12.0

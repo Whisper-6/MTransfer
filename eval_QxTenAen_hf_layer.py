@@ -23,9 +23,17 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--num-gpus", type=int, default=torch.cuda.device_count())
     parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model")
-    parser.add_argument("--mask-layers", type=int, default=0)
+    parser.add_argument(
+        "--mask-layers",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("START", "END"),
+        help="Mask layers in [START, END)"
+    )
     args = parser.parse_args()
-    args.output_dir = os.path.join("output", args.model, "QxTenAen-2step-hf-mask", f"L{args.mask_layers}")
+    mask_set = f"L{args.mask_layers}" if args.mask_layers is not None else "None"
+    args.output_dir = os.path.join("output", args.model, "QxTenAen-2step-hf-mask", mask_set)
     args.data_dir = os.path.join("output", args.model, "translation")
     args.top_k = 64
     args.top_p = 0.9
@@ -205,10 +213,11 @@ def worker_process(rank, args, data, return_dict, progress):
                 attention_mask,
             )
 
-            # 将 t_span 的 kv_cache 破坏
-            for layer in range(args.mask_layers):
-                prompt_kv_cache[layer][0][:,:,:,:] = prompt_kv_cache_wo_t[layer][0][:,:,:,:]
-                prompt_kv_cache[layer][1][:,:,:,:] = prompt_kv_cache_wo_t[layer][1][:,:,:,:]
+            # 将 mask_layers 的 kv 替换为没有 translation 的 kv
+            if args.mask_layers is not None:
+                for layer in range(args.mask_layers[0], args.mask_layers[1]):
+                    prompt_kv_cache[layer][0][:,:,:,:] = prompt_kv_cache_wo_t[layer][0][:,:,:,:]
+                    prompt_kv_cache[layer][1][:,:,:,:] = prompt_kv_cache_wo_t[layer][1][:,:,:,:]
             
             outputs = generate(
                 model,
@@ -306,7 +315,6 @@ def build_token_spans(ex, tokenizer):
 # ---------------------- main ----------------------
 def main():
     args = parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
 
     # ---------- 加载数据 ----------
     data = []
