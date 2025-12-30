@@ -12,9 +12,9 @@ from utils import build_chat_prompt, last_number_from_text, save_results
 langs = ["bn", "de", "es", "fr", "ja", "ru", "th"]
 
 SOLVE_PROMPT = (
+    "Solve the problem in English and enclose the final number at the end of the response in $\\boxed{{}}$."
     "Problem: {problem}\n\n"
     "English Translation: {translation}\n\n"
-    "Solve the problem in English and enclose the final number at the end of the response in $\\boxed{{}}$."
 )
 
 def parse_args():
@@ -23,8 +23,9 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--num-gpus", type=int, default=torch.cuda.device_count())
     parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model")
+    parser.add_argument("--mask-layers", type=int, default=0)
     args = parser.parse_args()
-    args.output_dir = os.path.join("output", args.model, "QxTenAen-2step-hf")
+    args.output_dir = os.path.join("output", args.model, "QxTenAen-2step-hf-mask", f"L{args.mask_layers}")
     args.data_dir = os.path.join("output", args.model, "translation")
     args.top_k = 64
     args.top_p = 0.9
@@ -154,6 +155,8 @@ def worker_process(rank, args, data, return_dict, progress):
 
     records = []
 
+    empty_token_id = tokenizer("                ")["input_ids"][0]
+
     def run_generate(data, max_new_tokens, batch_size, data_unfinished):
 
         # 按照 prompt 长度排序，减少 padding
@@ -191,6 +194,22 @@ def worker_process(rank, args, data, return_dict, progress):
                 attention_mask,
             )
 
+            padded_input_ids_wo_t = padded_input_ids.clone()
+            for i, (p_start, p_end, t_start, t_end) in enumerate(spans):
+                # 将 t_span 的内容替换为 pad_token_id
+                padded_input_ids_wo_t[i, t_start:t_end] = empty_token_id
+
+            prompt_kv_cache_wo_t = prefill(
+                model,
+                padded_input_ids_wo_t,
+                attention_mask,
+            )
+
+            # 将 t_span 的 kv_cache 破坏
+            for layer in range(args.mask_layers):
+                prompt_kv_cache[layer][0][:,:,:,:] = prompt_kv_cache_wo_t[layer][0][:,:,:,:]
+                prompt_kv_cache[layer][1][:,:,:,:] = prompt_kv_cache_wo_t[layer][1][:,:,:,:]
+            
             outputs = generate(
                 model,
                 padded_input_ids,
@@ -259,7 +278,7 @@ def build_token_spans(ex, tokenizer):
 
     # ---------------- char span -> token span ----------------
     def find_span(start_str, end_str):
-        s = prompt.find(start_str) + len(start_str)
+        s = prompt.find(start_str)
         e = prompt.find(end_str, s)
         return s, e
 
@@ -297,8 +316,6 @@ def main():
             continue
         with open(path, encoding="utf-8") as f:
             lang_data = [json.loads(l) for l in f]
-        random.shuffle(lang_data)
-        lang_data = lang_data[:500]
         for ex in lang_data:
             ex["lang"] = lang
         data.extend(lang_data)
