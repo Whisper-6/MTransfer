@@ -87,37 +87,64 @@ def extract_trends(cover_results, total_layers):
 # ==================================================
 # 3. 绘图：同一张图展示两条趋势
 # ==================================================
-def plot_cover_trends(prefix, suffix, root):
+def plot_cover_trends(prefix, suffix, root, vline_x=14):
     plt.figure(figsize=(8, 5.5))
 
-    # -------- 前向覆盖 --------
-    x1, y1, ci1 = zip(*prefix)
-    plt.errorbar(
+    # ================= 前向覆盖 =================
+    x1, y1, ci1 = map(np.array, zip(*prefix))
+
+    plt.plot(
         x1, y1,
-        yerr=ci1,
         marker="o",
-        linestyle="-",
         linewidth=2,
-        capsize=3,
-        label="Cover from front: L[0, x]"
+        label="Cover from front: L[0, x)"
     )
 
-    # -------- 后向覆盖 --------
-    x2, y2, ci2 = zip(*suffix)
-    plt.errorbar(
-        x2, y2,
-        yerr=ci2,
-        marker="o",
-        linestyle="-",
-        linewidth=2,
-        capsize=3,
-        label="Cover from back: L[x, 28]"
+    plt.fill_between(
+        x1,
+        y1 - ci1 * 1.25,
+        y1 + ci1 * 1.25,
+        alpha=0.25
     )
+
+    # ================= 后向覆盖 =================
+    x2, y2, ci2 = map(np.array, zip(*suffix))
+
+    plt.plot(
+        x2, y2,
+        marker="o",
+        linewidth=2,
+        label="Cover from back: L[x, 28)"
+    )
+
+    plt.fill_between(
+        x2,
+        y2 - ci2 * 1.25,
+        y2 + ci2 * 1.25,
+        alpha=0.25
+    )
+
+    # ================= 垂直虚线 =================
+    if vline_x is not None:
+        plt.axvline(
+            x=vline_x,
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            alpha=0.8,
+            label=f"x = {vline_x}"
+        )
+
+    # ================= 坐标 & 网格 =================
+    max_layer = max(x1.max(), x2.max())
+    ticks = np.arange(0, max_layer + 1, 2)
+
+    plt.xticks(ticks)
+    plt.grid(True, which="major", linestyle="--", alpha=0.4)
 
     plt.xlabel("Coverage Boundary Layer")
     plt.ylabel("Mean Accuracy")
     plt.title("Accuracy vs Coverage Range")
-    plt.grid(True, linestyle="--", alpha=0.4)
     plt.legend()
 
     out_path = os.path.join(root, "coverage_trends.png")

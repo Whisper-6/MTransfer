@@ -5,8 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # ================= 配置 =================
-input_file = "output/Qwen2.5-1.5B-Instruct/QxTenAen-2step-TPI/attn_result.jsonl"
-output_root = "output/Qwen2.5-1.5B-Instruct/QxTenAen-2step-TPI/plots"
+input_file = "output/Qwen2.5-3B-Instruct/QxTenAen-2step-PTI/attn_result.jsonl"
+output_root = "output/Qwen2.5-3B-Instruct/QxTenAen-2step-PTI/plots"
 os.makedirs(output_root, exist_ok=True)
 
 # ================= 读取数据 =================

@@ -15,8 +15,8 @@ from utils import last_number_from_text, build_chat_prompt, save_results
 langs = ["bn", "de", "es", "fr", "ja", "ru", "th"]
 
 SOLVE_PROMPT = (
-    "English Translation: {translation}\n\n"
     "Problem: {problem}\n\n"
+    "English Translation: {translation}\n\n"
     "Solve the problem in English and enclose the final number at the end of the response in $\\boxed{{}}$.\n\n"
 )
 
@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument("--num-gpus", type=int, default=torch.cuda.device_count())
     parser.add_argument("--model-dir", default="/root/autodl-tmp/local_model")
     args = parser.parse_args()
-    args.output_dir = os.path.join("output", args.model, "QxTenAen-2step-TPI")
+    args.output_dir = os.path.join("output", args.model, "QxTenAen-2step-PTI")
     args.data_dir = os.path.join("output", args.model, "translation")
     args.top_k = 64
     args.top_p = 0.9

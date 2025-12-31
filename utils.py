@@ -73,8 +73,9 @@ def save_results(args, langs, lang_results):
             "ci_radius": round(ci_radius, 6),
         })
 
-        correct_all += correct
-        total_all += total
+        if lang != "en":
+            correct_all += correct
+            total_all += total
 
     acc_all, ci_radius_all = get_acc(correct_all, total_all)
     summary_rows.append({

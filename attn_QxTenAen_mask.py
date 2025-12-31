@@ -264,7 +264,6 @@ def main():
         with open(path, encoding="utf-8") as f:
             lang_data = [json.loads(l) for l in f]
         random.shuffle(lang_data)
-        lang_data = lang_data[:250]
         for ex in lang_data:
             ex["lang"] = lang
             for k in ["pred", "answer", "is_correct"]:
