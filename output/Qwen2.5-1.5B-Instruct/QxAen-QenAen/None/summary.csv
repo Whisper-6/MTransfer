@@ -1,0 +1,3 @@
+language,total,correct,accuracy,ci_radius
+bn,499,375,0.751503,0.037917
+all,499,375,0.751503,0.037917

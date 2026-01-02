@@ -29,8 +29,6 @@ TRANSLATE_PROMPT = (
     "English Translation:"
 )
 
-QUESTION_FIELD = "m_query"
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -83,7 +81,8 @@ def worker_process(rank, args, data_batches, return_dict, progress):
                     records.append({
                         "lang": ex["lang"],
                         "source": ex["source"],
-                        "problem": ex[QUESTION_FIELD],
+                        "problem": ex["m_query"],
+                        "problem_en": ex["query"],
                         "translation": response,
                         "answer": ex["answer"],
                     })
@@ -124,7 +123,7 @@ def main():
 
     for ex in data:
         lang = ex["lang"]
-        user_content = TRANSLATE_PROMPT.format(language=language[lang], question=ex[QUESTION_FIELD])
+        user_content = TRANSLATE_PROMPT.format(language=language[lang], question=ex["m_query"])
         prompt = build_chat_prompt(tokenizer, user_content)
         ex["prompt"] = prompt
 

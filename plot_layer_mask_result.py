@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-ROOT = "./output/Qwen2.5-1.5B-Instruct/QxTenAen-2step-hf-mask"
+ROOT = "./output/Qwen2.5-1.5B-Instruct/QxTenAen-QenAen"
 TOTAL_LAYERS = 28
 
 

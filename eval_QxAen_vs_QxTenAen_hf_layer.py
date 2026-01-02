@@ -11,10 +11,12 @@ from utils import build_chat_prompt, last_number_from_text, save_results
 
 langs = ["bn", "de", "es", "fr", "ja", "ru", "th"]
 
+TRANSLATION_PROMPT = "Problem in English: "
+
 SOLVE_PROMPT = (
-    "Solve the problem in English and enclose the final number at the end of the response in $\\boxed{{}}$."
-    "Problem: {problem}\n\n"
-    "English Translation: {translation}\n\n"
+    "Problem in {language}: {problem}\n\n" +
+    TRANSLATION_PROMPT + "{translation}\n\n" +
+    "Solve the problem using English and enclose the final number at the end of the response in $\\boxed{{}}$."
 )
 
 def parse_args():
@@ -274,7 +276,11 @@ def build_token_spans(ex, tokenizer):
 
     problem = ex["problem"]
     translation = ex["translation"]
-    user_content = SOLVE_PROMPT.format(problem=problem, translation=translation)
+    user_content = SOLVE_PROMPT.format(
+        problem=problem,
+        language=ex["lang"],
+        translation=translation
+    )
     prompt = build_chat_prompt(tokenizer, user_content)
 
     encoding = tokenizer(
